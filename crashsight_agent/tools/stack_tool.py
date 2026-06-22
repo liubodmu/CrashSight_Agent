@@ -2,6 +2,9 @@
 import time
 from ..config import PROJECTS, CRASHSIGHT_BASE
 from ..api_client import openapi_post
+from ..context import WindowManager
+
+_window = WindowManager()
 
 
 def execute(project_id: str, issue_id: str, version: str = '-1') -> dict:
@@ -48,8 +51,12 @@ def execute(project_id: str, issue_id: str, version: str = '-1') -> dict:
     raw_stack = crash_map.get('callStack', '') or crash_info.get('callStack', '')
     call_stack = retrace_stack or raw_stack
 
+    # Context 工程: 智能截断过长堆栈（保留崩溃点 + 调用入口）
+    call_stack_truncated = _window.truncate_stack(call_stack, max_tokens=1500)
+
     return {
-        'callStack': call_stack,
+        'callStack': call_stack_truncated,
+        'callStackFull': call_stack,         # 保留完整版（history_tool 对比用）
         'rawCallStack': raw_stack,
         'crashHash': crash_hash,
         'brand': crash_info.get('brand', ''),

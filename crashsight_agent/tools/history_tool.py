@@ -1,25 +1,30 @@
-"""历史问题判定工具 — 用 LLM 对比堆栈判断是否为同一 Bug"""
+"""历史问题判定工具
+
+搜索流程保持原样（关键帧提取 + 多帧搜索 + 拉候选堆栈）
+仅最终的匹配判断从手写算法替换为 LLM 语义对比
+"""
 import time
-from ..config import PROJECTS, CRASHSIGHT_BASE, LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
+from ..config import PROJECTS, CRASHSIGHT_BASE
 from ..api_client import openapi_post
 from ..llm_client import call_llm
+from .keyframe import extract_key_frame
 
 
 def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str = '') -> dict:
     """
-    判断体验服问题是否在正式服存在。
+    判断崩溃问题是否在正式服/历史版本存在
     
-    流程:
-    1. 从堆栈提取搜索关键词
-    2. 在正式服搜索候选 issue
-    3. 拉取候选堆栈
-    4. 用 LLM 判断两个堆栈是否为同一 Bug
+    流程（与原 app.py 一致）:
+    1. extract_key_frame() → 四轮打分提取关键帧 + 特征组(top3)
+    2. _multi_search_candidates() → 用 feature_frames 分别搜 advancedSearchEx，合并去重
+    3. 逐个候选拉堆栈
+    4. LLM 对比判断是否同一 Bug（替代原来的 _hard_anchor_match + Jaccard）
     """
     project = PROJECTS.get(project_id)
     if not project:
         raise ValueError(f"项目不存在: {project_id}")
 
-    # 确定搜索目标（体验服→正式服，正式服→搜自己）
+    # 确定搜索目标
     if project['isExperience']:
         target_project_id = project['prod_counterpart']
         if not target_project_id:
@@ -32,30 +37,45 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
     target_app_id = target_project['appId']
     target_platform_id = target_project['pid']
 
-    # 提取搜索关键词（取堆栈中有意义的函数名）
-    search_keyword = _extract_search_keyword(exp_stack, exp_exception)
-    if not search_keyword:
-        return {'isHistory': False, 'reason': '无法从堆栈提取搜索关键词'}
+    # ── Step 1: 提取关键帧（原版四轮算法）──
+    kf_ret = extract_key_frame(exp_stack, exp_stack, exception_name=exp_exception)
+    if not kf_ret:
+        return {'isHistory': False, 'reason': '无法从堆栈提取关键帧'}
 
-    # 在正式服搜索候选
-    candidates = _search_candidates(target_app_id, target_platform_id, search_keyword, exclude_id=issue_id)
+    key_frame, is_weak, feature_frames = kf_ret
+    print(f'[History] 关键帧="{key_frame}" 特征组={feature_frames}')
+
+    # ── Step 2: 多帧搜索候选（原版逻辑）──
+    candidates = _multi_search_candidates(target_app_id, target_platform_id, feature_frames, limit_per_kw=10)
+
+    # 排除自己
+    candidates = [c for c in candidates
+                  if not (c.get('issueId', '').startswith(issue_id[:8]) or
+                          issue_id.startswith(c.get('issueId', '')[:8]))]
+
     if not candidates:
-        return {'isHistory': False, 'reason': f'正式服未搜到包含"{search_keyword}"的问题'}
+        return {'isHistory': False, 'reason': f'正式服未搜到包含 "{key_frame}" 的问题'}
 
-    # 逐个候选用 LLM 判断
-    for cand in candidates[:3]:
+    print(f'[History] 搜到 {len(candidates)} 个候选')
+
+    # ── Step 3 & 4: 逐个候选拉堆栈 + LLM 判断 ──
+    for i, cand in enumerate(candidates[:5]):
         cand_id = cand.get('issueId', '')
         cand_exception = cand.get('exceptionName', '')
 
-        # 获取候选堆栈
+        # 拉堆栈
         cand_stack = _get_candidate_stack(cand, target_app_id, target_platform_id)
         if not cand_stack:
+            print(f'[History]   候选 {cand_id[:8]} 堆栈为空，跳过')
             continue
 
-        # LLM 判断
-        is_same = _llm_compare_stacks(exp_stack, cand_stack, exp_exception, cand_exception)
+        # LLM 判断（替代原来的 _hard_anchor_match + Jaccard）
+        print(f'[History]   候选 {cand_id[:8]} ({cand_exception}) LLM 对比中...')
+        is_same = _llm_compare_stacks(exp_stack, cand_stack, exp_exception, cand_exception, key_frame)
+
         if is_same:
             prod_url = f'https://crashsight.qq.com/crash-reporting/crashes/{target_app_id}/{cand_id}?pid={target_platform_id}'
+            print(f'[History]   ✓ 匹配成功! {cand_id[:8]}')
             return {
                 'isHistory': True,
                 'prodIssueId': cand_id,
@@ -63,80 +83,79 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
                 'prodUrl': prod_url,
                 'prodCrashCount': cand.get('crashNum') or cand.get('count') or 0,
                 'prodAffectedUsers': cand.get('imeiCount', 0),
+                'matchedKeyFrame': key_frame,
             }
 
+        print(f'[History]   ✗ 不匹配')
         time.sleep(1)
 
-    return {'isHistory': False, 'reason': '候选堆栈均不匹配'}
+    return {'isHistory': False, 'reason': '候选堆栈均不匹配', 'keyFrame': key_frame}
 
 
-def _extract_search_keyword(stack: str, exception_name: str = '') -> str:
-    """从堆栈提取搜索关键词（简化版：取第一个有意义的 Class::method）"""
-    import re
-    if not stack:
-        return exception_name.split('.')[-1] if exception_name else ''
+# ==================== 多帧搜索（原版逻辑）====================
 
-    # 跳过噪音帧
-    skip = (
-        'libc.so', 'libart.so', 'abort', 'raise', 'tgkill',
-        'FDebug::', 'FPlatformMisc::', 'FOutputDevice::',
-        'StaticFailDebug', 'CommonUnixCrashHandler',
-        '__pthread', '__kernel', 'signal handler',
-    )
-
-    for line in stack.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-        if any(s in line for s in skip):
-            continue
-        # C++ Class::method
-        m = re.search(r'(\w+(?:<[^>]*>)?::\w+)\s*\(', line)
-        if m and len(m.group(1)) > 8:
-            return m.group(1)
-        # Java
-        m = re.search(r'([\w$]+\.[\w$]+)\(', line)
-        if m and len(m.group(1)) > 8:
-            return m.group(1)
-
-    return exception_name.split('.')[-1] if exception_name else ''
-
-
-def _search_candidates(app_id: str, platform_id: int, keyword: str, exclude_id: str = '', limit: int = 5) -> list:
-    """在目标项目搜索候选 issue"""
-    conditions = [
-        {'queryType': 'TERMS_WILDCARD', 'field': 'version', 'terms': ['1.*']},
-        {'field': 'exceptionType'},
-        {'queryType': 'TEXT_MATCH_PHRASE', 'field': 'crashDetail', 'text': keyword, 'not': False},
-    ]
-
-    body = {
-        'appId': app_id,
-        'platformId': int(platform_id),
-        'pid': str(platform_id),
-        'desc': 'true',
-        'rows': limit,
-        'start': '0',
-        'sortField': 'matchCount',
-        'searchConditionGroup': {'conditions': conditions},
-    }
-
-    try:
-        data = openapi_post(f'{CRASHSIGHT_BASE}/uniform/openapi/advancedSearchEx', body, timeout=15)
-        inner = data.get('data', {}) if isinstance(data.get('data'), dict) else {}
-        if not inner:
-            inner = data.get('ret', {}) if isinstance(data.get('ret'), dict) else {}
-        issue_list = inner.get('issueList', []) or []
-
-        # 排除自己
-        if exclude_id:
-            issue_list = [i for i in issue_list if not i.get('issueId', '').startswith(exclude_id[:8])]
-
-        return issue_list
-    except Exception as e:
-        print(f'[History] 搜索失败: {e}')
+def _multi_search_candidates(app_id: str, platform_id: int, feature_frames: list, limit_per_kw: int = 10) -> list:
+    """用多个关键帧分别搜索 advancedSearchEx，合并去重候选列表（与原 app.py 一致）"""
+    if not feature_frames:
         return []
 
+    all_candidates = {}
+    seen_ids = set()
+
+    for kf_text in feature_frames:
+        search_text = kf_text.strip('[]')
+        if not search_text:
+            continue
+
+        conditions = [
+            {'queryType': 'TERMS_WILDCARD', 'field': 'version', 'terms': ['1.*']},
+            {'field': 'exceptionType'},
+            {'queryType': 'TEXT_MATCH_PHRASE', 'field': 'crashDetail', 'text': search_text, 'not': False},
+        ]
+
+        body = {
+            'appId': app_id,
+            'platformId': int(platform_id),
+            'pid': str(platform_id),
+            'desc': 'true',
+            'rows': limit_per_kw,
+            'start': '0',
+            'sortField': 'matchCount',
+            'searchConditionGroup': {'conditions': conditions},
+            'enableSearchOomLinkAdvancedSearch': True,
+            'oomDesc': True,
+            'oomNum': 10,
+            'oomNumOrder': 10,
+            'oomSortField': 'uploadTimestamp',
+            'oomStart': 0,
+        }
+
+        try:
+            data = openapi_post(f'{CRASHSIGHT_BASE}/uniform/openapi/advancedSearchEx', body, timeout=15)
+            inner = data.get('data', {}) if isinstance(data.get('data'), dict) else {}
+            if not inner:
+                inner = data.get('ret', {}) if isinstance(data.get('ret'), dict) else {}
+            issue_list = inner.get('issueList', []) or []
+            num_found = inner.get('numFound', 0)
+            print(f'[History] 搜索 "{kf_text[:40]}" → {num_found} 条')
+
+            for iss in issue_list:
+                iid = iss.get('issueId', '')
+                if iid and iid not in seen_ids:
+                    seen_ids.add(iid)
+                    all_candidates[iid] = iss
+        except Exception as e:
+            print(f'[History] 搜索 "{kf_text[:40]}" 失败: {e}')
+            continue
+
+        time.sleep(0.5)
+
+    candidates = list(all_candidates.values())
+    candidates.sort(key=lambda x: x.get('matchCount', 0) or 0, reverse=True)
+    return candidates
+
+
+# ==================== 候选堆栈获取 ====================
 
 def _get_candidate_stack(cand: dict, app_id: str, platform_id: int) -> str:
     """从候选中获取堆栈（优先 lastMatchedReport，不行再调 API）"""
@@ -176,17 +195,25 @@ def _get_candidate_stack(cand: dict, app_id: str, platform_id: int) -> str:
         crash_map = data2.get('ret', {}).get('crashMap', {})
         return crash_map.get('retraceCrashDetail', '') or crash_map.get('callStack', '')
     except Exception as e:
-        print(f'[History] 获取候选堆栈失败: {e}')
+        print(f'[History] 获取候选 {cand_id[:8]} 堆栈失败: {e}')
         return ''
 
 
-def _llm_compare_stacks(stack_a: str, stack_b: str, exc_a: str, exc_b: str) -> bool:
-    """用 LLM 判断两个崩溃堆栈是否为同一 Bug"""
-    # 截断堆栈避免 token 过长
-    stack_a_short = '\n'.join(stack_a.split('\n')[:30])
-    stack_b_short = '\n'.join(stack_b.split('\n')[:30])
+# ==================== LLM 对比判断（替代 _hard_anchor_match + Jaccard）====================
+
+def _llm_compare_stacks(stack_a: str, stack_b: str, exc_a: str, exc_b: str, key_frame: str) -> bool:
+    """用 LLM 判断两个崩溃堆栈是否为同一 Bug
+    
+    把关键帧信息也告诉 LLM，帮助它聚焦核心比对区域
+    """
+    # 截断堆栈避免 token 过长（保留关键帧附近）
+    stack_a_short = _truncate_around_keyframe(stack_a, key_frame, context_lines=12)
+    stack_b_short = _truncate_around_keyframe(stack_b, key_frame, context_lines=12)
 
     prompt = f"""你是一个崩溃分析专家。请判断以下两个崩溃堆栈是否属于同一个 Bug（同一根因）。
+
+## 关键帧（已通过算法提取的最重要函数）
+{key_frame}
 
 ## 堆栈 A（体验服）
 异常类型: {exc_a}
@@ -201,19 +228,50 @@ def _llm_compare_stacks(stack_a: str, stack_b: str, exc_a: str, exc_b: str) -> b
 ```
 
 ## 判断规则
-1. 如果异常类型完全不同（如 SIGSEGV vs SIGABRT），通常不是同一 Bug
-2. 关注崩溃的根因函数（真正出错的那一帧），而不是底层框架帧
-3. 允许编译器优化导致的帧序微小变化
-4. 不同版本之间，同一 Bug 的堆栈可能有少量差异，但核心调用链应该一致
+1. 如果异常类型完全不同类（如 SIGSEGV vs SIGABRT），通常不是同一 Bug。但 SIGSEGV 和 SIGBUS 都属于内存访问错误，可以是同一 Bug。
+2. 重点关注关键帧及其上下文调用链是否一致
+3. 允许编译器优化导致的帧序微小变化（如中间多/少几帧框架函数）
+4. 忽略线程入口、系统框架等通用帧的差异
+5. 核心判断标准：崩溃的根因函数 + 上下文调用路径是否一致
 
 请只回答 YES 或 NO，然后用一句话说明理由。
 格式: YES/NO: 理由"""
 
-    response = call_llm(prompt)
+    response = call_llm(prompt, temperature=0.1)
     if not response:
+        print('[History] LLM 不可用，默认判为不匹配')
         return False
 
     answer = response.strip().upper()
     is_same = answer.startswith('YES')
-    print(f'[History-LLM] 判定: {"Match" if is_same else "Mismatch"} | {response[:80]}')
+    reason = response.strip().split(':', 1)[1].strip() if ':' in response else response.strip()
+    print(f'[History]   LLM 判定: {"✓ Match" if is_same else "✗ Mismatch"} | {reason[:60]}')
     return is_same
+
+
+def _truncate_around_keyframe(stack: str, key_frame: str, context_lines: int = 12) -> str:
+    """截取关键帧附近的堆栈（上下各 context_lines 行）"""
+    lines = stack.split('\n')
+
+    # 找到关键帧所在行
+    anchor_idx = -1
+    for i, line in enumerate(lines):
+        if key_frame in line:
+            anchor_idx = i
+            break
+
+    if anchor_idx >= 0:
+        # 取关键帧上方 5 行 + 下方 context_lines 行
+        start = max(0, anchor_idx - 5)
+        end = min(len(lines), anchor_idx + context_lines + 1)
+        selected = lines[start:end]
+        if start > 0:
+            selected.insert(0, f'... (省略前 {start} 行)')
+        if end < len(lines):
+            selected.append(f'... (省略后 {len(lines) - end} 行)')
+        return '\n'.join(selected)
+    else:
+        # 关键帧不在堆栈里，取前 25 行
+        if len(lines) > 25:
+            return '\n'.join(lines[:25]) + f'\n... (省略后 {len(lines) - 25} 行)'
+        return stack

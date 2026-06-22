@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""CrashSight Agent CLI — 命令行交互入口"""
+"""CrashSight Agent CLI — 命令行交互入口（LangGraph 版）"""
 from crashsight_agent.orchestration.agent import CrashSightAgent
 
 
 def main():
-    print("=" * 50)
-    print("  CrashSight 崩溃分析 Agent")
-    print("  输入自然语言查询，如:")
-    print("    安卓体验服 3.7 昨天的崩溃")
-    print("    Top1 正式服有没有")
-    print("    对比这周和上周的崩溃率")
-    print("  输入 quit 退出，输入 reset 重置对话")
-    print("=" * 50)
+    print()
+    print("╔══════════════════════════════════════════╗")
+    print("║   CrashSight 崩溃分析 Agent (LangGraph)  ║")
+    print("╠══════════════════════════════════════════╣")
+    print("║  示例:                                   ║")
+    print("║    安卓体验服 3.7 昨天的崩溃             ║")
+    print("║    Top1 正式服有没有                     ║")
+    print("║    iOS 最近一周崩溃率趋势                ║")
+    print("║                                          ║")
+    print("║  输入 quit 退出 | reset 重置对话         ║")
+    print("╚══════════════════════════════════════════╝")
     print()
 
     agent = CrashSightAgent()
@@ -35,7 +38,7 @@ def main():
 
         print()
         answer = agent.chat(query)
-        print(f"\n助手: {answer}\n")
+        print(f"助手: {answer}\n")
 
 
 if __name__ == '__main__':
