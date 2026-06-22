@@ -1,7 +1,9 @@
 """CrashSight Agent — 基于 LangGraph 状态机 + Checkpointer 持久化"""
 import uuid
+import time
 from .graph import build_graph
 from ..context import WindowManager, HistoryCompressor
+from ..logging import get_logger
 
 
 class CrashSightAgent:
@@ -32,6 +34,12 @@ class CrashSightAgent:
         """处理一次用户消息，返回 Agent 回答"""
         # Context 工程: 检查历史是否需要压缩
         self.session_history = self.compressor.maybe_compress(self.session_history)
+
+        # 日志: 请求开始
+        logger = get_logger(self.thread_id)
+        logger.new_trace()
+        logger.log_session_start(user_message)
+        start_time = time.time()
 
         # 打印 token 预算状态
         budget = self.window_manager.get_budget_status(self.session_history)
@@ -67,6 +75,11 @@ class CrashSightAgent:
 
         # 提取回答
         answer = result.get('answer', '') or result.get('clarify_question', '出了点问题，请重试。')
+
+        # 日志: 请求结束
+        duration = int((time.time() - start_time) * 1000)
+        logger.log_session_end(success=bool(answer and len(answer) > 10),
+                               duration_ms=duration, answer_length=len(answer))
 
         # 更新会话历史
         self.session_history.append({

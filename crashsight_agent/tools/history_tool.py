@@ -58,7 +58,9 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
 
     print(f'[History] 搜到 {len(candidates)} 个候选')
 
-    # ── Step 3 & 4: 逐个候选拉堆栈 + LLM 判断 ──
+    # ── Step 3 & 4: 逐个候选拉堆栈 + Ensemble 三路投票判断 ──
+    from .ensemble import ensemble_compare
+
     for i, cand in enumerate(candidates[:5]):
         cand_id = cand.get('issueId', '')
         cand_exception = cand.get('exceptionName', '')
@@ -69,13 +71,17 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
             print(f'[History]   候选 {cand_id[:8]} 堆栈为空，跳过')
             continue
 
-        # LLM 判断（替代原来的 _hard_anchor_match + Jaccard）
-        print(f'[History]   候选 {cand_id[:8]} ({cand_exception}) LLM 对比中...')
-        is_same = _llm_compare_stacks(exp_stack, cand_stack, exp_exception, cand_exception, key_frame)
+        # Ensemble 三路投票（硬锚点 + Jaccard + LLM）
+        print(f'[History]   候选 {cand_id[:8]} ({cand_exception}) Ensemble 对比中...')
+        result = ensemble_compare(exp_stack, cand_stack, exp_exception, cand_exception, key_frame)
 
-        if is_same:
+        votes = result['votes']
+        strategy = result['strategy']
+        print(f'[History]   投票: anchor={votes["anchor"]} jaccard={votes["jaccard"]} llm={votes["llm"]} → {strategy}')
+
+        if result['is_match']:
             prod_url = f'https://crashsight.qq.com/crash-reporting/crashes/{target_app_id}/{cand_id}?pid={target_platform_id}'
-            print(f'[History]   ✓ 匹配成功! {cand_id[:8]}')
+            print(f'[History]   ✓ 匹配成功! {cand_id[:8]} (strategy={strategy})')
             return {
                 'isHistory': True,
                 'prodIssueId': cand_id,
@@ -84,9 +90,12 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
                 'prodCrashCount': cand.get('crashNum') or cand.get('count') or 0,
                 'prodAffectedUsers': cand.get('imeiCount', 0),
                 'matchedKeyFrame': key_frame,
+                'matchStrategy': strategy,
+                'votes': votes,
+                'scores': result['scores'],
             }
 
-        print(f'[History]   ✗ 不匹配')
+        print(f'[History]   ✗ 不匹配 (strategy={strategy})')
         time.sleep(1)
 
     return {'isHistory': False, 'reason': '候选堆栈均不匹配', 'keyFrame': key_frame}

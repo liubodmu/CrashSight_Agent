@@ -118,6 +118,39 @@ async def reset(request: Request):
     return {'success': True, 'message': '会话已重置'}
 
 
+@app.post("/api/feedback")
+async def feedback(request: Request):
+    """用户反馈接口 — 记录错误判定 + 提炼规则"""
+    from crashsight_agent.tools.feedback import record_feedback, get_feedback_stats
+    body = await request.json()
+
+    issue_id = body.get('issue_id', '')
+    key_frame = body.get('key_frame', '')
+    exp_stack = body.get('exp_stack', '')
+    prod_stack = body.get('prod_stack', '')
+    original_prediction = body.get('original_prediction', 'YES')
+    ground_truth = body.get('ground_truth', 'NO')
+    user_reason = body.get('user_reason', '')
+
+    if not user_reason:
+        return {'success': False, 'error': '请提供判错原因'}
+
+    result = record_feedback(
+        issue_id=issue_id, key_frame=key_frame,
+        exp_stack=exp_stack, prod_stack=prod_stack,
+        original_prediction=original_prediction,
+        ground_truth=ground_truth, user_reason=user_reason,
+    )
+    return {'success': True, **result}
+
+
+@app.get("/api/feedback/stats")
+async def feedback_stats():
+    """查看反馈统计 + 已提炼的规则"""
+    from crashsight_agent.tools.feedback import get_feedback_stats
+    return get_feedback_stats()
+
+
 @app.get("/api/health")
 async def health():
     return {'status': 'ok', 'sessions': len(_sessions)}

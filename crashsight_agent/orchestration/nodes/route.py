@@ -6,10 +6,12 @@ Layer 3: LLM 兜底（仅前两层都无法确定时调用）
 """
 import re
 import json
+import time
 from datetime import datetime, timedelta
 from ...llm_client import call_llm
 from ...config import PROJECTS
 from ...utils.project_resolver import resolve_project
+from ...logging import get_logger
 from ...utils.date_parser import parse_date_range
 
 
@@ -260,12 +262,16 @@ def route_node(state: dict) -> dict:
     query = state['query']
     history = state.get('session_history', [])
     today = datetime.now()
+    logger = get_logger()
+    start_time = time.time()
 
     # ─── Layer 1: 关键词快速匹配 ───
     l1_result = _layer1_keyword_match(query, today)
     if l1_result.get('matched') and l1_result.get('confidence', 0) >= 0.8:
-        print(f'[Route] Layer1 命中: intent={l1_result["intent"]} conf={l1_result["confidence"]}')
-        # 成功案例存入 episodic memory
+        duration = int((time.time() - start_time) * 1000)
+        logger.log_route(query, l1_result['intent'], l1_result['confidence'], 'layer1',
+                         l1_result.get('project_id'), l1_result.get('version'),
+                         l1_result.get('start_date'), l1_result.get('end_date'), duration_ms=duration)
         save_episodic_case(query, l1_result['intent'], l1_result.get('project_id'),
                           l1_result.get('version'), l1_result.get('start_date'), l1_result.get('end_date'))
         return {
@@ -282,7 +288,10 @@ def route_node(state: dict) -> dict:
     # ─── Layer 2: 历史案例匹配 ───
     l2_result = _layer2_episodic_match(query)
     if l2_result.get('matched'):
-        print(f'[Route] Layer2 命中: intent={l2_result["intent"]} conf={l2_result["confidence"]}')
+        duration = int((time.time() - start_time) * 1000)
+        logger.log_route(query, l2_result['intent'], l2_result['confidence'], 'layer2',
+                         l2_result.get('project_id'), l2_result.get('version'),
+                         l2_result.get('start_date'), l2_result.get('end_date'), duration_ms=duration)
         return {
             'intent': l2_result['intent'],
             'confidence': l2_result['confidence'],
@@ -295,14 +304,15 @@ def route_node(state: dict) -> dict:
         }
 
     # ─── Layer 3: LLM 兜底 ───
-    print(f'[Route] Layer1/2 未命中，升级到 Layer3 (LLM)')
     l3_result = _layer3_llm_classify(query, history, today)
 
     if l3_result.get('matched'):
-        # LLM 成功解析，存入 episodic memory 供下次 Layer 2 复用
+        duration = int((time.time() - start_time) * 1000)
+        logger.log_route(query, l3_result['intent'], l3_result['confidence'], 'layer3',
+                         l3_result.get('project_id'), l3_result.get('version'),
+                         l3_result.get('start_date'), l3_result.get('end_date'), duration_ms=duration)
         save_episodic_case(query, l3_result['intent'], l3_result.get('project_id'),
                           l3_result.get('version'), l3_result.get('start_date'), l3_result.get('end_date'))
-        print(f'[Route] Layer3 结果: intent={l3_result["intent"]} conf={l3_result["confidence"]}')
         return {
             'intent': l3_result['intent'],
             'confidence': l3_result['confidence'],
