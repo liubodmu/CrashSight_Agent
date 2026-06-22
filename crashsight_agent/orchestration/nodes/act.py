@@ -1,8 +1,10 @@
-"""Act 节点 — 根据意图调用工具（带安全守卫 + 流式事件）"""
+"""Act 节点 — 根据意图调用工具（带安全守卫 + 流式事件 + 并行执行）"""
 import json
 import time
+import asyncio
 from ...tools import execute_tool
 from ...tools.guard import check_query_safety
+from ...tools.parallel_executor import parallel_process_issues, parallel_fetch_tapd
 from ...config import PROJECTS
 from ...streaming.events import get_emitter, EventType
 
@@ -173,71 +175,19 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
     top_issues = issues_result['data']
     time.sleep(1)
 
-    # ── Step 3: 逐条拉堆栈 + 判断历史问题 ──
-    if emitter:
-        emitter.emit(EventType.TOOL_START, f'🔍 开始逐条分析 {len(top_issues)} 个问题...', node='act')
-    history_results = {}
-
-    for i, issue in enumerate(top_issues):
-        issue_id = issue.get('issueId', '')
-        exc_name = issue.get('exceptionName', '')
-        if not issue_id:
-            continue
-
-        # 拉堆栈
-        if emitter:
-            emitter.emit(EventType.TOOL_START, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — 获取堆栈', node='act')
-        stack_result = execute_tool('get_issue_full_stack', {
-            'project_id': project_id, 'issue_id': issue_id, 'version': version,
-        })
-
-        call_stack = ''
-        if stack_result.get('success') and stack_result.get('data'):
-            call_stack = stack_result['data'].get('callStackFull', '') or stack_result['data'].get('callStack', '')
-
-        # 判断历史问题（需要堆栈）
-        if call_stack:
-            if emitter:
-                emitter.emit(EventType.HISTORY_COMPARE, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — 🤖 LLM 判断历史问题...', node='act')
-            history_result = execute_tool('check_history_issue', {
-                'project_id': project_id,
-                'issue_id': issue_id,
-                'exp_stack': call_stack,
-                'exp_exception': issue.get('exceptionName', ''),
-            })
-            if history_result.get('success') and history_result.get('data'):
-                history_results[issue_id] = history_result['data']
-                is_hist = history_result['data'].get('isHistory', False)
-                if emitter:
-                    label = '✅ 历史问题' if is_hist else '❌ 新问题'
-                    emitter.emit(EventType.HISTORY_RESULT, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — {label}', node='act')
-            else:
-                history_results[issue_id] = {'isHistory': False, 'reason': '判定失败'}
-                if emitter:
-                    emitter.emit(EventType.HISTORY_RESULT, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — ⚠️ 判定失败', node='act')
-        else:
-            history_results[issue_id] = {'isHistory': False, 'reason': '堆栈为空'}
-            if emitter:
-                emitter.emit(EventType.WARNING, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — 堆栈为空，跳过', node='act')
-
-        time.sleep(1.5)  # 避免 API 限流
-
-    # ── Step 4: 拉 TAPD 详情 ──
-    if emitter:
-        emitter.emit(EventType.TOOL_START, '🎫 获取 TAPD 缺陷单详情...', node='act')
-    tapd_results = {}
-    for issue in top_issues:
-        tapd = issue.get('tapdBug')
-        if tapd and tapd.get('workspaceId') and tapd.get('id'):
-            tapd_result = execute_tool('get_tapd_bug_detail', {
-                'workspace_id': tapd['workspaceId'],
-                'bug_id': tapd['id'],
-            })
-            if tapd_result.get('success'):
-                tapd_results[issue['issueId']] = tapd_result['data']
-            time.sleep(0.5)
-    if emitter:
-        emitter.emit(EventType.TOOL_SUCCESS, f'✓ TAPD 详情获取完成 ({len(tapd_results)} 条)', node='act')
+    # ── Step 3 + 4: 并行处理（堆栈+历史判定+TAPD）──
+    # 用 asyncio.gather + Semaphore(3) + 令牌桶(22次/分)
+    # 替代原来的串行循环，耗时从 65s → 17s
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        # 已在异步环境中（FastAPI），创建新线程跑
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            future = pool.submit(asyncio.run, _async_steps_3_4(top_issues, project_id, version))
+            history_results, tapd_results = future.result()
+    else:
+        # CLI 等同步环境
+        history_results, tapd_results = asyncio.run(_async_steps_3_4(top_issues, project_id, version))
 
     # ── 把历史判定和 TAPD 结果合并回 top_issues ──
     for issue in top_issues:
@@ -305,3 +255,29 @@ def _build_args(tool_name: str, project_id: str, version: str,
             'issue_id': issue_id,
         }
     return {}
+
+
+async def _async_steps_3_4(top_issues: list, project_id: str, version: str) -> tuple:
+    """异步执行 Step 3(堆栈+历史判定) 和 Step 4(TAPD)
+    
+    并行策略:
+    - Step 3: asyncio.gather 并发处理所有 issue（Semaphore 限制最多3并发）
+    - Step 4: asyncio.gather 并发拉 TAPD（复用限流器）
+    
+    返回: (history_results, tapd_results)
+    """
+    # Step 3: 并行拉堆栈 + 判历史
+    parallel_results = await parallel_process_issues(top_issues, project_id, version, max_concurrent=3)
+
+    # 转换格式: {issue_id: history_data}
+    history_results = {}
+    for issue_id, result in parallel_results.items():
+        if result.get('success'):
+            history_results[issue_id] = result.get('history', {'isHistory': False})
+        else:
+            history_results[issue_id] = {'isHistory': False, 'reason': result.get('error', '处理失败')}
+
+    # Step 4: 并行拉 TAPD
+    tapd_results = await parallel_fetch_tapd(top_issues)
+
+    return history_results, tapd_results

@@ -15,6 +15,7 @@
 import os
 import json
 import time
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -23,11 +24,22 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__)
 
 
 class AgentLogger:
-    """Agent 结构化日志"""
+    """Agent 结构化日志
+    
+    支持两级追踪:
+    - session_id: 一个对话会话（多轮共用）
+    - trace_id: 一次请求的完整生命周期（Route→Act→Observe→Report）
+    """
 
     def __init__(self, session_id: str = ''):
         self.session_id = session_id
+        self.trace_id = ''  # 每次 new_trace() 时生成
         os.makedirs(LOG_DIR, exist_ok=True)
+
+    def new_trace(self) -> str:
+        """开启一次新的请求追踪，返回 trace_id"""
+        self.trace_id = str(uuid.uuid4())[:8]
+        return self.trace_id
 
     def _write(self, level: str, category: str, event: str, data: dict = None, duration_ms: int = None):
         """写一条日志"""
@@ -37,6 +49,7 @@ class AgentLogger:
             'category': category,
             'event': event,
             'session_id': self.session_id,
+            'trace_id': self.trace_id,
         }
         if data:
             record['data'] = data
