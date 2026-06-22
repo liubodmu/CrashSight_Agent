@@ -1,0 +1,10 @@
+{"query": "安卓体验服 3.7.365.365.365 昨天的崩溃", "expect_intent": "crash_report", "expect_has_trend": true, "expect_has_issues": true}
+{"query": "iOS体验服最近一周趋势", "expect_intent": "trend_query", "expect_has_trend": true, "expect_has_issues": false}
+{"query": "安卓体验服 3.7 今天的数据", "expect_intent": "crash_report", "expect_has_trend": true, "expect_has_issues": true}
+{"query": "安卓正式服 3.7 昨天崩溃", "expect_intent": "crash_report", "expect_has_trend": true, "expect_has_issues": true}
+{"query": "鸿蒙体验版 2.1 昨天的崩溃情况", "expect_intent": "crash_report", "expect_has_trend": true, "expect_has_issues": true}
+{"query": "安卓体验服崩溃率走势最近一周", "expect_intent": "trend_query", "expect_has_trend": true, "expect_has_issues": false}
+{"query": "iOS正式服 6.1 最近3天", "expect_intent": "crash_report", "expect_has_trend": true, "expect_has_issues": true}
+{"query": "安卓 3.7 最近30天崩溃率", "expect_intent": "trend_query", "expect_has_trend": true, "expect_has_issues": false}
+{"query": "鸿蒙正式服最近一周", "expect_intent": "crash_report", "expect_has_trend": true, "expect_has_issues": true}
+{"query": "安卓体验服全版本昨天", "expect_intent": "crash_report", "expect_has_trend": true, "expect_has_issues": true}

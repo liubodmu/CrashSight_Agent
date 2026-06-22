@@ -1,9 +1,10 @@
-"""Act 节点 — 根据意图调用工具（带安全守卫）"""
+"""Act 节点 — 根据意图调用工具（带安全守卫 + 流式事件）"""
 import json
 import time
 from ...tools import execute_tool
 from ...tools.guard import check_query_safety
 from ...config import PROJECTS
+from ...streaming.events import get_emitter, EventType
 
 
 # 各意图对应的工具调用计划
@@ -119,9 +120,11 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
     """
     observations = []
     tool_calls = []
+    emitter = get_emitter()
 
     # ── Step 1: 崩溃率趋势 ──
-    print('[Act] Step 1/4: 获取崩溃率趋势...')
+    if emitter:
+        emitter.emit(EventType.TOOL_START, '📈 正在获取崩溃率趋势...', node='act')
     trend_result = execute_tool('get_crash_trend', {
         'project_id': project_id, 'version': version,
         'start_date': start_date, 'end_date': end_date,
@@ -133,11 +136,18 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
         'error': trend_result.get('error', ''),
     })
     tool_calls.append({'tool': 'get_crash_trend', 'alias': 'trend', 'success': trend_result.get('success', False)})
+    if emitter:
+        if trend_result.get('success'):
+            tr = trend_result.get('data', {})
+            emitter.emit(EventType.TOOL_SUCCESS, f'✓ 崩溃率: {tr.get("minRate", "-")}% ~ {tr.get("maxRate", "-")}%', node='act')
+        else:
+            emitter.emit_tool_error('get_crash_trend', trend_result.get('error', ''))
     print(f'[Act]   {"✓" if trend_result.get("success") else "✗"} get_crash_trend')
     time.sleep(1)
 
     # ── Step 2: TOP10 问题 ──
-    print('[Act] Step 2/4: 获取 TOP10 问题...')
+    if emitter:
+        emitter.emit(EventType.TOOL_START, '📋 正在获取 TOP10 崩溃问题...', node='act')
     issues_result = execute_tool('get_top_issues', {
         'project_id': project_id, 'version': version,
         'start_date': start_date, 'end_date': end_date, 'top_n': 10,
@@ -149,6 +159,12 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
         'error': issues_result.get('error', ''),
     })
     tool_calls.append({'tool': 'get_top_issues', 'alias': 'top_issues', 'success': issues_result.get('success', False)})
+    if emitter:
+        if issues_result.get('success'):
+            count = len(issues_result.get('data', []))
+            emitter.emit(EventType.TOOL_SUCCESS, f'✓ 获取到 {count} 个崩溃问题', node='act')
+        else:
+            emitter.emit_tool_error('get_top_issues', issues_result.get('error', ''))
     print(f'[Act]   {"✓" if issues_result.get("success") else "✗"} get_top_issues')
 
     if not issues_result.get('success') or not issues_result.get('data'):
@@ -158,16 +174,19 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
     time.sleep(1)
 
     # ── Step 3: 逐条拉堆栈 + 判断历史问题 ──
-    print(f'[Act] Step 3/4: 逐条处理 {len(top_issues)} 个问题（堆栈+历史判定）...')
+    if emitter:
+        emitter.emit(EventType.TOOL_START, f'🔍 开始逐条分析 {len(top_issues)} 个问题...', node='act')
     history_results = {}
 
     for i, issue in enumerate(top_issues):
         issue_id = issue.get('issueId', '')
+        exc_name = issue.get('exceptionName', '')
         if not issue_id:
             continue
 
         # 拉堆栈
-        print(f'[Act]   [{i+1}/{len(top_issues)}] {issue_id[:8]} 获取堆栈...')
+        if emitter:
+            emitter.emit(EventType.TOOL_START, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — 获取堆栈', node='act')
         stack_result = execute_tool('get_issue_full_stack', {
             'project_id': project_id, 'issue_id': issue_id, 'version': version,
         })
@@ -178,7 +197,8 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
 
         # 判断历史问题（需要堆栈）
         if call_stack:
-            print(f'[Act]   [{i+1}/{len(top_issues)}] {issue_id[:8]} 判断历史问题...')
+            if emitter:
+                emitter.emit(EventType.HISTORY_COMPARE, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — 🤖 LLM 判断历史问题...', node='act')
             history_result = execute_tool('check_history_issue', {
                 'project_id': project_id,
                 'issue_id': issue_id,
@@ -187,20 +207,28 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
             })
             if history_result.get('success') and history_result.get('data'):
                 history_results[issue_id] = history_result['data']
+                is_hist = history_result['data'].get('isHistory', False)
+                if emitter:
+                    label = '✅ 历史问题' if is_hist else '❌ 新问题'
+                    emitter.emit(EventType.HISTORY_RESULT, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — {label}', node='act')
             else:
                 history_results[issue_id] = {'isHistory': False, 'reason': '判定失败'}
+                if emitter:
+                    emitter.emit(EventType.HISTORY_RESULT, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — ⚠️ 判定失败', node='act')
         else:
             history_results[issue_id] = {'isHistory': False, 'reason': '堆栈为空'}
+            if emitter:
+                emitter.emit(EventType.WARNING, f'  [{i+1}/{len(top_issues)}] {exc_name[:30]} — 堆栈为空，跳过', node='act')
 
         time.sleep(1.5)  # 避免 API 限流
 
     # ── Step 4: 拉 TAPD 详情 ──
-    print(f'[Act] Step 4/4: 获取 TAPD 详情...')
+    if emitter:
+        emitter.emit(EventType.TOOL_START, '🎫 获取 TAPD 缺陷单详情...', node='act')
     tapd_results = {}
     for issue in top_issues:
         tapd = issue.get('tapdBug')
         if tapd and tapd.get('workspaceId') and tapd.get('id'):
-            print(f'[Act]   TAPD bug {tapd["id"][:8]}...')
             tapd_result = execute_tool('get_tapd_bug_detail', {
                 'workspace_id': tapd['workspaceId'],
                 'bug_id': tapd['id'],
@@ -208,6 +236,8 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
             if tapd_result.get('success'):
                 tapd_results[issue['issueId']] = tapd_result['data']
             time.sleep(0.5)
+    if emitter:
+        emitter.emit(EventType.TOOL_SUCCESS, f'✓ TAPD 详情获取完成 ({len(tapd_results)} 条)', node='act')
 
     # ── 把历史判定和 TAPD 结果合并回 top_issues ──
     for issue in top_issues:

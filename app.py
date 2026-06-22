@@ -1,4 +1,4 @@
-"""CrashSight Agent — FastAPI Web 服务"""
+"""CrashSight Agent — FastAPI Web 服务（支持 SSE 流式推理输出）"""
 import json
 import asyncio
 from fastapi import FastAPI, Request
@@ -6,11 +6,12 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from crashsight_agent.orchestration.agent import CrashSightAgent
+from crashsight_agent.streaming.events import EventEmitter, set_emitter, EventType
 
 app = FastAPI(title="CrashSight Analysis Agent")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# 会话管理（内存，重启丢失）
+# 会话管理
 _sessions: dict[str, CrashSightAgent] = {}
 
 
@@ -22,7 +23,28 @@ def _get_agent(session_id: str) -> CrashSightAgent:
 
 @app.post("/api/chat")
 async def chat(request: Request):
-    """主对话接口"""
+    """普通对话接口（等全部完成再返回）"""
+    body = await request.json()
+    query = body.get('query', '').strip()
+    session_id = body.get('session_id', 'default')
+
+    if not query:
+        return {'success': False, 'error': '请输入查询内容'}
+
+    agent = _get_agent(session_id)
+    loop = asyncio.get_event_loop()
+    answer = await loop.run_in_executor(None, agent.chat, query)
+
+    return {
+        'success': True,
+        'answer': answer,
+        'session_id': session_id,
+    }
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: Request):
+    """SSE 流式对话接口 — 实时推送 Agent 执行过程"""
     body = await request.json()
     query = body.get('query', '').strip()
     session_id = body.get('session_id', 'default')
@@ -32,21 +54,63 @@ async def chat(request: Request):
 
     agent = _get_agent(session_id)
 
-    # 在线程池中运行（避免阻塞）
-    loop = asyncio.get_event_loop()
-    answer = await loop.run_in_executor(None, agent.chat, query)
+    async def event_generator():
+        # 创建事件发射器
+        emitter = EventEmitter()
+        queue = emitter.enable_async()
 
-    return {
-        'success': True,
-        'answer': answer,
-        'session_id': session_id,
-        'thread_id': agent.thread_id,
-    }
+        # 设置全局 emitter（供节点使用）
+        set_emitter(emitter)
+
+        # 发送开始事件
+        emitter.emit(EventType.AGENT_START, '开始处理...', node='agent')
+        yield emitter.events[-1].to_sse()
+
+        # 在线程池中运行 Agent（不阻塞事件循环）
+        loop = asyncio.get_event_loop()
+        task = loop.run_in_executor(None, agent.chat, query)
+
+        # 边执行边消费事件队列
+        while True:
+            try:
+                # 尝试从队列取事件（100ms 超时）
+                event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                yield event.to_sse()
+            except asyncio.TimeoutError:
+                # 检查 Agent 是否已完成
+                if task.done():
+                    # 排空队列
+                    while not queue.empty():
+                        event = queue.get_nowait()
+                        yield event.to_sse()
+                    break
+
+        # 获取最终结果
+        answer = task.result()
+
+        # 发送最终回答
+        end_event = f"data: {json.dumps({'type': 'answer', 'message': answer, 'node': 'end'}, ensure_ascii=False)}\n\n"
+        yield end_event
+
+        # 发送结束标记
+        yield f"data: {json.dumps({'type': 'agent_end', 'message': '完成'}, ensure_ascii=False)}\n\n"
+
+        # 清理全局 emitter
+        set_emitter(None)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        }
+    )
 
 
 @app.post("/api/reset")
 async def reset(request: Request):
-    """重置会话"""
     body = await request.json()
     session_id = body.get('session_id', 'default')
     if session_id in _sessions:
@@ -65,7 +129,6 @@ async def index():
         return f.read()
 
 
-# 静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 

@@ -1,0 +1,51 @@
+{"query": "安卓体验服 3.7 昨天的崩溃", "intent": "crash_report", "project_id": "android_exp", "version": "3.7.*", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "安卓 3.7 昨天", "intent": "crash_report", "project_id": "android_exp", "version": "3.7.*", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "android体验服 3.7.365 昨天崩溃数据", "intent": "crash_report", "project_id": "android_exp", "version": "3.7.365", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "安卓体验服今天的崩溃情况", "intent": "crash_report", "project_id": "android_exp", "version": null, "start_date": "AUTO_TODAY", "end_date": "AUTO_TODAY"}
+{"query": "安卓体验服最近一周", "intent": "crash_report", "project_id": "android_exp", "version": null, "start_date": "AUTO_7DAYS", "end_date": "AUTO_TODAY"}
+{"query": "安卓体验服最近30天的崩溃", "intent": "crash_report", "project_id": "android_exp", "version": null, "start_date": "AUTO_30DAYS", "end_date": "AUTO_TODAY"}
+{"query": "安卓体验服上周的数据", "intent": "crash_report", "project_id": "android_exp", "version": null, "start_date": "AUTO_LAST_WEEK_MON", "end_date": "AUTO_LAST_WEEK_SUN"}
+{"query": "安卓正式服 3.7 昨天", "intent": "crash_report", "project_id": "android_prod", "version": "3.7.*", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "android正式服最近一周崩溃", "intent": "crash_report", "project_id": "android_prod", "version": null, "start_date": "AUTO_7DAYS", "end_date": "AUTO_TODAY"}
+{"query": "安卓正式 3.6 上周", "intent": "crash_report", "project_id": "android_prod", "version": "3.6.*", "start_date": "AUTO_LAST_WEEK_MON", "end_date": "AUTO_LAST_WEEK_SUN"}
+{"query": "iOS体验服 6.1 昨天的崩溃", "intent": "crash_report", "project_id": "ios_exp", "version": "6.1.*", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "苹果体验服最近一周", "intent": "crash_report", "project_id": "ios_exp", "version": null, "start_date": "AUTO_7DAYS", "end_date": "AUTO_TODAY"}
+{"query": "ios正式服 6.1 今天", "intent": "crash_report", "project_id": "ios_prod", "version": "6.1.*", "start_date": "AUTO_TODAY", "end_date": "AUTO_TODAY"}
+{"query": "iOS正式服最近3天", "intent": "crash_report", "project_id": "ios_prod", "version": null, "start_date": "AUTO_3DAYS", "end_date": "AUTO_TODAY"}
+{"query": "鸿蒙体验服 2.1 昨天崩溃", "intent": "crash_report", "project_id": "harmony_exp", "version": "2.1.*", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "鸿蒙体验版今天的数据", "intent": "crash_report", "project_id": "harmony_exp", "version": null, "start_date": "AUTO_TODAY", "end_date": "AUTO_TODAY"}
+{"query": "harmony正式服 2.0 最近一周", "intent": "crash_report", "project_id": "harmony_prod", "version": "2.0.*", "start_date": "AUTO_7DAYS", "end_date": "AUTO_TODAY"}
+{"query": "鸿蒙正式服上周", "intent": "crash_report", "project_id": "harmony_prod", "version": null, "start_date": "AUTO_LAST_WEEK_MON", "end_date": "AUTO_LAST_WEEK_SUN"}
+{"query": "帮我看看安卓的崩溃", "intent": "crash_report", "project_id": "android_exp", "version": null, "start_date": null, "end_date": null}
+{"query": "出一份iOS的崩溃报告", "intent": "crash_report", "project_id": "ios_exp", "version": null, "start_date": null, "end_date": null}
+{"query": "安卓崩溃率趋势", "intent": "trend_query", "project_id": "android_exp", "version": null, "start_date": null, "end_date": null}
+{"query": "iOS体验服最近一周崩溃率走势", "intent": "trend_query", "project_id": "ios_exp", "version": null, "start_date": "AUTO_7DAYS", "end_date": "AUTO_TODAY"}
+{"query": "安卓正式服崩溃率怎么样", "intent": "trend_query", "project_id": "android_prod", "version": null, "start_date": null, "end_date": null}
+{"query": "鸿蒙最近30天崩溃率趋势", "intent": "trend_query", "project_id": "harmony_exp", "version": null, "start_date": "AUTO_30DAYS", "end_date": "AUTO_TODAY"}
+{"query": "安卓 3.7 今天崩溃率多高", "intent": "trend_query", "project_id": "android_exp", "version": "3.7.*", "start_date": "AUTO_TODAY", "end_date": "AUTO_TODAY"}
+{"query": "Top1 正式服有没有", "intent": "history_check", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "第一个问题是历史问题吗", "intent": "history_check", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "Top1 是新问题还是老问题", "intent": "history_check", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "这个问题正式服有吗", "intent": "history_check", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "Top3 是不是历史问题", "intent": "history_check", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "Top1 的完整堆栈", "intent": "issue_detail", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "第一个问题的堆栈详情", "intent": "issue_detail", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "那个GPU崩溃具体看看", "intent": "issue_detail", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "Top1 的设备信息", "intent": "issue_detail", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "帮我看看这个问题的TAPD单", "intent": "issue_detail", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "对比这周和上周的崩溃", "intent": "compare", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "对比本周和上周的Top5", "intent": "compare", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "3.7和3.6哪个崩溃率高", "intent": "compare", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "安卓体验服 这周vs上周", "intent": "compare", "project_id": "android_exp", "version": null, "start_date": null, "end_date": null}
+{"query": "比较一下昨天和前天的数据", "intent": "compare", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "你好", "intent": "clarify", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "今天天气怎么样", "intent": "clarify", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "帮我写个代码", "intent": "clarify", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "查一下", "intent": "clarify", "project_id": null, "version": null, "start_date": null, "end_date": null}
+{"query": "3.7", "intent": "clarify", "project_id": null, "version": "3.7.*", "start_date": null, "end_date": null}
+{"query": "安卓体验服 3.7.365.365.365 昨天top10", "intent": "crash_report", "project_id": "android_exp", "version": "3.7.365.365.365", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "看下安卓全版本昨天的崩溃情况", "intent": "crash_report", "project_id": "android_exp", "version": "-1", "start_date": "AUTO_YESTERDAY", "end_date": "AUTO_YESTERDAY"}
+{"query": "iOS 6.1.2 最近一周崩溃分析报告", "intent": "crash_report", "project_id": "ios_exp", "version": "6.1.2", "start_date": "AUTO_7DAYS", "end_date": "AUTO_TODAY"}
+{"query": "安卓体验服6月1号到今天", "intent": "crash_report", "project_id": "android_exp", "version": null, "start_date": "AUTO_JUN1", "end_date": "AUTO_TODAY"}
+{"query": "帮我查安卓 3.7 近7天的崩溃数据", "intent": "crash_report", "project_id": "android_exp", "version": "3.7.*", "start_date": "AUTO_7DAYS", "end_date": "AUTO_TODAY"}
+{"query": "iOS体验服崩溃率走势最近30天", "intent": "trend_query", "project_id": "ios_exp", "version": null, "start_date": "AUTO_30DAYS", "end_date": "AUTO_TODAY"}

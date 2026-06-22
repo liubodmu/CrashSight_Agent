@@ -1,0 +1,1 @@
+{"note": "TODO: 从 kf_dataset_batch_raw.json 抽取真实堆栈对，人工标注 label (true=同一Bug, false=不同Bug)"}

@@ -470,7 +470,7 @@
             return html;
         }
 
-        // ========== 发送消息 ==========
+        // ========== 发送消息（SSE 流式）==========
         async function sendMessage() {
             const query = input.value.trim();
             if (!query || isLoading) return;
@@ -478,32 +478,87 @@
             isLoading = true;
             btnSend.disabled = true;
             input.value = '';
-            statusEl.textContent = '思考中...';
+            statusEl.textContent = '执行中...';
 
             addMessage(query, 'user');
-            const thinkingDiv = document.createElement('div');
-            thinkingDiv.className = 'message thinking';
-            thinkingDiv.textContent = '正在分析...';
-            chatArea.appendChild(thinkingDiv);
+
+            // 创建思考过程容器
+            const processDiv = document.createElement('div');
+            processDiv.className = 'message thinking';
+            processDiv.style.whiteSpace = 'pre-wrap';
+            processDiv.innerHTML = '🧠 开始分析...\n';
+            chatArea.appendChild(processDiv);
             chatArea.scrollTop = chatArea.scrollHeight;
 
+            let finalAnswer = '';
+
             try {
-                const resp = await fetch('/api/chat', {
+                const resp = await fetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query, session_id: currentSessionId }),
                 });
-                const data = await resp.json();
-                thinkingDiv.remove();
 
-                if (data.success) {
-                    addMessage(data.answer, 'assistant');
-                } else {
-                    addMessage('❌ ' + (data.error || '请求失败'), 'assistant');
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+
+                    // 解析 SSE 消息（以 \n\n 分隔）
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop(); // 最后一个可能不完整
+
+                    for (const part of parts) {
+                        if (!part.startsWith('data: ')) continue;
+                        try {
+                            const event = JSON.parse(part.slice(6));
+                            
+                            if (event.type === 'answer') {
+                                // 最终回答
+                                finalAnswer = event.message;
+                            } else if (event.type === 'agent_end') {
+                                // 结束
+                            } else {
+                                // 中间状态 — 更新思考过程
+                                processDiv.innerHTML += event.message + '\n';
+                                chatArea.scrollTop = chatArea.scrollHeight;
+                                statusEl.textContent = event.message.slice(0, 30);
+                            }
+                        } catch (e) {}
+                    }
                 }
+
+                // 移除思考过程，显示最终回答
+                processDiv.remove();
+                if (finalAnswer) {
+                    addMessage(finalAnswer, 'assistant');
+                } else {
+                    addMessage('处理完成，但未收到最终回答。', 'assistant');
+                }
+
             } catch (e) {
-                thinkingDiv.remove();
-                addMessage('❌ 网络错误，请确认后端服务已启动 (python app.py)', 'assistant');
+                processDiv.remove();
+                // 降级到普通接口
+                try {
+                    const resp = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query, session_id: currentSessionId }),
+                    });
+                    const data = await resp.json();
+                    if (data.success) {
+                        addMessage(data.answer, 'assistant');
+                    } else {
+                        addMessage('❌ ' + (data.error || '请求失败'), 'assistant');
+                    }
+                } catch (e2) {
+                    addMessage('❌ 网络错误，请确认后端服务已启动 (python app.py)', 'assistant');
+                }
             }
 
             isLoading = false;
