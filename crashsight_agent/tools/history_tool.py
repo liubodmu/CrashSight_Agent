@@ -58,8 +58,9 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
 
     print(f'[History] 搜到 {len(candidates)} 个候选')
 
-    # ── Step 3 & 4: 逐个候选拉堆栈 + Ensemble 三路投票判断 ──
-    from .ensemble import ensemble_compare
+    # ── Step 3 & 4: 逐个候选拉堆栈 + LLM 判断 ──
+    # 策略: Jaccard 做快速排除（明显不相关的不浪费 LLM），最终判定全靠 LLM
+    from .ensemble import _jaccard_match, _exception_compatible
 
     for i, cand in enumerate(candidates[:5]):
         cand_id = cand.get('issueId', '')
@@ -71,17 +72,24 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
             print(f'[History]   候选 {cand_id[:8]} 堆栈为空，跳过')
             continue
 
-        # Ensemble 三路投票（硬锚点 + Jaccard + LLM）
-        print(f'[History]   候选 {cand_id[:8]} ({cand_exception}) Ensemble 对比中...')
-        result = ensemble_compare(exp_stack, cand_stack, exp_exception, cand_exception, key_frame)
+        # 快速排除 1: 异常类型不兼容（如 SIGSEGV vs SIGABRT）
+        if exp_exception and cand_exception and not _exception_compatible(exp_exception, cand_exception):
+            print(f'[History]   候选 {cand_id[:8]} 异常类型不兼容({exp_exception} vs {cand_exception})，跳过')
+            continue
 
-        votes = result['votes']
-        strategy = result['strategy']
-        print(f'[History]   投票: anchor={votes["anchor"]} jaccard={votes["jaccard"]} llm={votes["llm"]} → {strategy}')
+        # 快速排除 2: Jaccard 极低（<0.3）说明两个堆栈完全无关
+        _, jaccard_score = _jaccard_match(exp_stack, cand_stack, threshold=0.3)
+        if jaccard_score < 0.3:
+            print(f'[History]   候选 {cand_id[:8]} Jaccard={jaccard_score:.2f} 太低，跳过（省 LLM）')
+            continue
 
-        if result['is_match']:
+        # LLM 判断（最终裁决）
+        print(f'[History]   候选 {cand_id[:8]} ({cand_exception}) Jaccard={jaccard_score:.2f}，LLM 判断中...')
+        is_same = _llm_compare_stacks(exp_stack, cand_stack, exp_exception, cand_exception, key_frame)
+
+        if is_same:
             prod_url = f'https://crashsight.qq.com/crash-reporting/crashes/{target_app_id}/{cand_id}?pid={target_platform_id}'
-            print(f'[History]   ✓ 匹配成功! {cand_id[:8]} (strategy={strategy})')
+            print(f'[History]   ✓ LLM 判定匹配! {cand_id[:8]}')
             return {
                 'isHistory': True,
                 'prodIssueId': cand_id,
@@ -90,12 +98,10 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
                 'prodCrashCount': cand.get('crashNum') or cand.get('count') or 0,
                 'prodAffectedUsers': cand.get('imeiCount', 0),
                 'matchedKeyFrame': key_frame,
-                'matchStrategy': strategy,
-                'votes': votes,
-                'scores': result['scores'],
+                'jaccard': jaccard_score,
             }
 
-        print(f'[History]   ✗ 不匹配 (strategy={strategy})')
+        print(f'[History]   ✗ LLM 判定不匹配')
         time.sleep(1)
 
     return {'isHistory': False, 'reason': '候选堆栈均不匹配', 'keyFrame': key_frame}
