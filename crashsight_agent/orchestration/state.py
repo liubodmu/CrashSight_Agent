@@ -28,6 +28,8 @@ class GraphState(TypedDict):
     step_count: int                         # 当前步数
     last_error: Optional[str]              # 最近一次错误
     retry_count: int                        # 重试次数
+    recover_count: int                      # 自适应恢复次数
+    recovery_strategy: Optional[dict]       # 当前恢复策略
 
     # ─── 终态输出 ───
     answer: str                             # 最终回答文本

@@ -7,6 +7,7 @@ from ...tools.guard import check_query_safety
 from ...tools.parallel_executor import parallel_process_issues, parallel_fetch_tapd
 from ...config import PROJECTS
 from ...streaming.events import get_emitter, EventType
+from ...logging import get_logger
 
 
 # 各意图对应的工具调用计划
@@ -37,6 +38,12 @@ def act_node(state: dict) -> dict:
     end_date = state.get('end_date', '')
     issue_id = state.get('issue_id', '')
     step_count = state.get('step_count', 0)
+    logger = get_logger()
+
+    logger._write('info', 'act', 'act_start', {
+        'intent': intent, 'project_id': project_id, 'version': version,
+        'start_date': start_date, 'end_date': end_date, 'issue_id': issue_id,
+    })
 
     # ─── 安全守卫：拦截不合理查询 ───
     if intent in ('crash_report', 'trend_query', 'compare'):
@@ -62,6 +69,16 @@ def act_node(state: dict) -> dict:
 
         if guard_result.get('warning'):
             print(f'[Guard] ⚠️ 警告: {guard_result["warning"]}')
+
+    # ─── 检查是否有恢复策略（来自 Observe 的自适应恢复）───
+    recovery_strategy = state.get('recovery_strategy')
+    if recovery_strategy:
+        logger._write('info', 'act', 'recovery_execution', {
+            'action': recovery_strategy.get('action', ''),
+            'adjustments': recovery_strategy.get('adjustments', {}),
+        })
+        print(f'[Act] 🔄 执行恢复策略: {recovery_strategy.get("action", "")}')
+        return _execute_recovery(state, recovery_strategy)
 
     # ─── 根据意图执行完整流程 ───
     tool_calls = []
@@ -124,13 +141,18 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
     tool_calls = []
     emitter = get_emitter()
 
+    logger = get_logger()
+    t0 = time.time()
+
     # ── Step 1: 崩溃率趋势 ──
     if emitter:
         emitter.emit(EventType.TOOL_START, '📈 正在获取崩溃率趋势...', node='act')
+    t1 = time.time()
     trend_result = execute_tool('get_crash_trend', {
         'project_id': project_id, 'version': version,
         'start_date': start_date, 'end_date': end_date,
     })
+    trend_ms = int((time.time() - t1) * 1000)
     observations.append({
         'tool': 'get_crash_trend', 'alias': 'trend',
         'success': trend_result.get('success', False),
@@ -138,22 +160,26 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
         'error': trend_result.get('error', ''),
     })
     tool_calls.append({'tool': 'get_crash_trend', 'alias': 'trend', 'success': trend_result.get('success', False)})
+    logger.log_tool_call('get_crash_trend', trend_result.get('success', False), trend_ms,
+                         error=trend_result.get('error', ''))
     if emitter:
         if trend_result.get('success'):
             tr = trend_result.get('data', {})
             emitter.emit(EventType.TOOL_SUCCESS, f'✓ 崩溃率: {tr.get("minRate", "-")}% ~ {tr.get("maxRate", "-")}%', node='act')
         else:
             emitter.emit_tool_error('get_crash_trend', trend_result.get('error', ''))
-    print(f'[Act]   {"✓" if trend_result.get("success") else "✗"} get_crash_trend')
+    print(f'[Act]   {"✓" if trend_result.get("success") else "✗"} get_crash_trend ({trend_ms}ms)')
     time.sleep(1)
 
     # ── Step 2: TOP10 问题 ──
     if emitter:
         emitter.emit(EventType.TOOL_START, '📋 正在获取 TOP10 崩溃问题...', node='act')
+    t2 = time.time()
     issues_result = execute_tool('get_top_issues', {
         'project_id': project_id, 'version': version,
         'start_date': start_date, 'end_date': end_date, 'top_n': 10,
     })
+    issues_ms = int((time.time() - t2) * 1000)
     observations.append({
         'tool': 'get_top_issues', 'alias': 'top_issues',
         'success': issues_result.get('success', False),
@@ -161,13 +187,15 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
         'error': issues_result.get('error', ''),
     })
     tool_calls.append({'tool': 'get_top_issues', 'alias': 'top_issues', 'success': issues_result.get('success', False)})
+    logger.log_tool_call('get_top_issues', issues_result.get('success', False), issues_ms,
+                         error=issues_result.get('error', ''))
     if emitter:
         if issues_result.get('success'):
             count = len(issues_result.get('data', []))
             emitter.emit(EventType.TOOL_SUCCESS, f'✓ 获取到 {count} 个崩溃问题', node='act')
         else:
             emitter.emit_tool_error('get_top_issues', issues_result.get('error', ''))
-    print(f'[Act]   {"✓" if issues_result.get("success") else "✗"} get_top_issues')
+    print(f'[Act]   {"✓" if issues_result.get("success") else "✗"} get_top_issues ({issues_ms}ms)')
 
     if not issues_result.get('success') or not issues_result.get('data'):
         return observations, tool_calls
@@ -178,15 +206,15 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
     # ── Step 3 + 4: 并行处理（堆栈+历史判定+TAPD）──
     # 用 asyncio.gather + Semaphore(3) + 令牌桶(22次/分)
     # 替代原来的串行循环，耗时从 65s → 17s
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        # 已在异步环境中（FastAPI），创建新线程跑
+    try:
+        loop = asyncio.get_running_loop()
+        # 已在异步环境中 → 不能直接 asyncio.run，用新线程
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(1) as pool:
             future = pool.submit(asyncio.run, _async_steps_3_4(top_issues, project_id, version))
             history_results, tapd_results = future.result()
-    else:
-        # CLI 等同步环境
+    except RuntimeError:
+        # 没有运行中的事件循环（CLI 等同步环境）
         history_results, tapd_results = asyncio.run(_async_steps_3_4(top_issues, project_id, version))
 
     # ── 把历史判定和 TAPD 结果合并回 top_issues ──
@@ -218,9 +246,19 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
         'error': '',
     })
 
+    total_ms = int((time.time() - t0) * 1000)
+    history_count = sum(1 for h in history_results.values() if h.get('isHistory'))
+    logger._write('info', 'act', 'full_report_done', {
+        'total_issues': len(top_issues),
+        'history_count': history_count,
+        'new_count': len(top_issues) - history_count,
+        'tapd_count': len(tapd_results),
+        'total_ms': total_ms,
+    }, duration_ms=total_ms)
+
     print(f'[Act] 完整报告流程完成: {len(top_issues)} 条问题，'
-          f'历史问题 {sum(1 for h in history_results.values() if h.get("isHistory"))} 条，'
-          f'TAPD {len(tapd_results)} 条')
+          f'历史问题 {history_count} 条，'
+          f'TAPD {len(tapd_results)} 条，耗时 {total_ms}ms')
 
     return observations, tool_calls
 
@@ -247,7 +285,6 @@ def _build_args(tool_name: str, project_id: str, version: str,
         return {
             'project_id': project_id,
             'issue_id': issue_id,
-            'version': version,
         }
     elif tool_name == 'check_history_issue':
         return {
@@ -281,3 +318,127 @@ async def _async_steps_3_4(top_issues: list, project_id: str, version: str) -> t
     tapd_results = await parallel_fetch_tapd(top_issues)
 
     return history_results, tapd_results
+
+
+# ==================== 恢复策略执行 ====================
+
+def _execute_recovery(state: dict, strategy: dict) -> dict:
+    """
+    执行 Observe 规划的恢复策略
+    
+    恢复策略类型：
+    - use_key_stack_fallback: 用 top_issues 自带的 keyStack 替代完整堆栈做历史判定
+    - skip_stack_and_history: 跳过堆栈和历史判定，直接输出已有数据
+    - broaden_search_version: 扩大搜索版本范围重跑历史判定
+    - trend_all_versions: 用全版本重拉趋势数据
+    """
+    adjustments = strategy.get('adjustments', {})
+    observations = state.get('observations', [])
+    project_id = state.get('project_id', '')
+    version = state.get('version', '-1')
+    start_date = state.get('start_date', '')
+    end_date = state.get('end_date', '')
+    step_count = state.get('step_count', 0)
+    logger = get_logger()
+
+    # ── 策略 A: 用 keyStack 兜底 ──
+    if adjustments.get('use_key_stack_fallback'):
+        # 从已有的 observations 中找 top_issues 数据
+        top_obs = next((o for o in observations if o.get('alias') == 'top_issues' and o.get('success')), None)
+        if not top_obs or not top_obs.get('data'):
+            print('[Recovery] top_issues 数据不存在，无法用 keyStack 兜底')
+            return {'step_count': step_count + 1, 'final_status': 'ok', 'recovery_strategy': None}
+
+        top_issues = top_obs['data']
+        recovered_count = 0
+
+        for issue in top_issues:
+            # 已经有堆栈的跳过
+            if issue.get('historyDetail', {}).get('reason') != '堆栈为空':
+                continue
+
+            key_stack = issue.get('keyStack', '') or issue.get('crashDetail', '')
+            if not key_stack:
+                continue
+
+            # 用 keyStack 做历史判定
+            print(f'[Recovery] 用 keyStack 对 {issue.get("exceptionName","")[:25]} 做历史判定...')
+            history_result = execute_tool('check_history_issue', {
+                'project_id': project_id,
+                'issue_id': issue.get('issueId', ''),
+                'exp_stack': key_stack,
+                'exp_exception': issue.get('exceptionName', ''),
+            })
+
+            if history_result.get('success') and history_result.get('data'):
+                hist_data = history_result['data']
+                issue['isHistoryIssue'] = hist_data.get('isHistory', False)
+                issue['historyDetail'] = hist_data
+                recovered_count += 1
+                logger.log_history_check(
+                    issue.get('issueId', ''), key_stack[:50],
+                    'match' if hist_data.get('isHistory') else 'mismatch',
+                    reason=f'keyStack兜底: {hist_data.get("reason", "")[:40]}',
+                )
+
+            time.sleep(1)
+
+        print(f'[Recovery] keyStack 兜底完成: 恢复了 {recovered_count} 个 issue 的历史判定')
+        logger._write('info', 'act', 'recovery_done', {
+            'strategy': 'use_key_stack_fallback',
+            'recovered_count': recovered_count,
+        })
+
+        # 注意: observations 是 Annotated[list, add]，只返回新增的记录
+        return {
+            'observations': [{
+                'tool': '_recovery', 'alias': 'recovery_keystack',
+                'success': True,
+                'data': {'recovered_count': recovered_count, 'top_issues': top_issues},
+                'error': '',
+            }],
+            'step_count': step_count + 1,
+            'final_status': 'ok',
+            'recovery_strategy': None,
+        }
+
+    # ── 策略 B: 跳过堆栈和历史判定 ──
+    if adjustments.get('skip_stack_and_history'):
+        print('[Recovery] 跳过堆栈和历史判定，使用已有数据生成报告')
+        logger._write('info', 'act', 'recovery_done', {'strategy': 'skip_stack_and_history'})
+        return {
+            'step_count': step_count + 1,
+            'final_status': 'ok',
+            'recovery_strategy': None,
+        }
+
+    # ── 策略 C: 全版本重拉趋势 ──
+    if adjustments.get('trend_all_versions'):
+        print('[Recovery] 用全版本(-1)重拉崩溃率趋势...')
+        trend_result = execute_tool('get_crash_trend', {
+            'project_id': project_id, 'version': '-1',
+            'start_date': start_date, 'end_date': end_date,
+        })
+        logger._write('info', 'act', 'recovery_done', {
+            'strategy': 'trend_all_versions',
+            'success': trend_result.get('success', False),
+        })
+        if trend_result.get('success'):
+            print(f'[Recovery] 趋势数据恢复成功')
+
+        # 只返回新增的趋势观测（会追加到 observations）
+        return {
+            'observations': [{
+                'tool': 'get_crash_trend', 'alias': 'trend',
+                'success': trend_result.get('success', False),
+                'data': trend_result.get('data'),
+                'error': trend_result.get('error', ''),
+            }],
+            'step_count': step_count + 1,
+            'final_status': 'ok',
+            'recovery_strategy': None,
+        }
+
+    # 未知策略，直接放行
+    print(f'[Recovery] 未知恢复策略: {adjustments}，跳过')
+    return {'step_count': step_count + 1, 'final_status': 'ok', 'recovery_strategy': None}

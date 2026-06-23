@@ -118,6 +118,67 @@ async def reset(request: Request):
     return {'success': True, 'message': '会话已重置'}
 
 
+@app.get("/api/versions/{project_id}")
+async def get_versions(project_id: str):
+    """获取指定项目的版本列表"""
+    import asyncio
+    from crashsight_agent.config import PROJECTS, CRASHSIGHT_BASE, USER_AUTH
+    from crashsight_agent.api_client import openapi_get
+
+    project = PROJECTS.get(project_id)
+    if not project:
+        return {'success': False, 'error': '项目不存在'}
+
+    app_id = project['appId']
+    pid = project['pid']
+
+    try:
+        loop = asyncio.get_event_loop()
+        url = (
+            f'{CRASHSIGHT_BASE}/uniform/openapi/getSelectorDatas'
+            f'/appId/{app_id}/pid/{pid}?types=version'
+        )
+        data = await loop.run_in_executor(None, openapi_get, url)
+
+        # 解析版本列表（兼容多种格式）
+        versions = []
+        ret = data.get('ret', {})
+        if isinstance(ret, dict):
+            d = ret.get('data', {})
+            if isinstance(d, dict):
+                for key in ['versionList', 'version', 'versions']:
+                    if key in d and isinstance(d[key], list):
+                        raw = d[key]
+                        for item in raw:
+                            if isinstance(item, str):
+                                versions.append(item)
+                            elif isinstance(item, dict):
+                                for k in ['productVersion', 'version', 'name']:
+                                    if k in item and item[k]:
+                                        versions.append(str(item[k]))
+                                        break
+                        break
+
+        # 去重 + 按版本号降序
+        seen = set()
+        unique = []
+        for v in versions:
+            v = v.strip()
+            if v and v not in seen:
+                seen.add(v)
+                unique.append(v)
+
+        import re
+        def ver_key(v):
+            parts = re.split(r'[.\-]', v)
+            return [int(p) if p.isdigit() else 0 for p in parts]
+        unique.sort(key=ver_key, reverse=True)
+
+        return {'success': True, 'data': unique[:50]}
+    except Exception as e:
+        return {'success': False, 'error': str(e)[:100], 'data': []}
+
+
 @app.post("/api/feedback")
 async def feedback(request: Request):
     """用户反馈接口 — 记录错误判定 + 提炼规则"""

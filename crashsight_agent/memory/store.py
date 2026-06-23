@@ -90,29 +90,82 @@ class MemoryStore:
         self._try_extract_skill(query, intent, project_id, version)
 
     def find_similar_episodes(self, query: str, limit: int = 5) -> list:
-        """查找相似的历史查询（简单关键词匹配，后续可升级为 Embedding）"""
+        """查找相似的历史查询（多策略匹配 + 相似度打分）
+        
+        策略：
+        1. 中文分词 + 同义词展开
+        2. 多关键词 LIKE 搜索（召回）
+        3. 对召回结果用 token 重叠度打分（排序）
+        4. 按分数降序返回 top N
+        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
 
-        # 提取查询中的关键词
-        keywords = [w for w in query.replace('，', ' ').replace('、', ' ').split() if len(w) >= 2]
-
-        if not keywords:
+        # 分词：按空格/标点拆分 + 单字过滤 + 同义词展开
+        raw_words = _tokenize(query)
+        if not raw_words:
             conn.close()
             return []
 
-        # 用 LIKE 做模糊匹配（每个关键词）
-        conditions = ' OR '.join(['query LIKE ?' for _ in keywords])
-        params = [f'%{kw}%' for kw in keywords]
+        # 同义词展开（增加召回率）
+        expanded = set(raw_words)
+        for w in raw_words:
+            synonyms = _get_synonyms(w)
+            expanded.update(synonyms)
 
+        # 用所有词做 LIKE 搜索（宽召回）
+        search_words = list(expanded)
+        conditions = ' OR '.join(['query LIKE ?' for _ in search_words])
+        params = [f'%{kw}%' for kw in search_words]
+
+        # 多召回一些，后面打分排序
         rows = conn.execute(
             f"""SELECT * FROM episodic WHERE success=1 AND ({conditions})
                 ORDER BY created_at DESC LIMIT ?""",
-            params + [limit]
+            params + [limit * 5]
         ).fetchall()
         conn.close()
 
-        return [dict(row) for row in rows]
+        if not rows:
+            return []
+
+        # 对召回结果打分（token 重叠度 + 意图匹配加分）
+        query_tokens = set(raw_words)
+        scored = []
+        for row in rows:
+            row_dict = dict(row)
+            row_tokens = set(_tokenize(row_dict.get('query', '')))
+            
+            if not row_tokens:
+                continue
+
+            # Jaccard 相似度
+            intersection = query_tokens & row_tokens
+            union = query_tokens | row_tokens
+            jaccard = len(intersection) / len(union) if union else 0
+
+            # 关键词命中加权（版本号/项目名命中权重更高）
+            weighted_score = jaccard
+            for token in intersection:
+                if _is_version(token):
+                    weighted_score += 0.15
+                elif _is_project_keyword(token):
+                    weighted_score += 0.10
+
+            row_dict['_score'] = weighted_score
+            scored.append(row_dict)
+
+        # 按分数排序，返回 top N
+        scored.sort(key=lambda x: x['_score'], reverse=True)
+        
+        # 过滤低分（< 0.2 的不要）
+        results = [r for r in scored[:limit] if r['_score'] >= 0.2]
+        
+        # 移除内部评分字段
+        for r in results:
+            r.pop('_score', None)
+
+        return results
 
     def get_recent_episodes(self, limit: int = 10) -> list:
         """获取最近 N 条记录"""
@@ -238,6 +291,13 @@ class MemoryStore:
 
     # ==================== 统计 ====================
 
+    def get_episode_count(self) -> int:
+        """获取 episodic 表总条数"""
+        conn = sqlite3.connect(self.db_path)
+        count = conn.execute("SELECT COUNT(*) FROM episodic").fetchone()[0]
+        conn.close()
+        return count
+
     def get_stats(self) -> dict:
         """获取记忆系统统计"""
         conn = sqlite3.connect(self.db_path)
@@ -255,3 +315,99 @@ class MemoryStore:
             'rule_count': rule_count,
             'success_rate': f"{success_rate}%",
         }
+
+
+# ==================== 分词与同义词工具函数 ====================
+
+import re as _re
+
+# 同义词表（领域相关）
+_SYNONYMS = {
+    '安卓': ['android', '安卓体验服', '安卓正式服'],
+    'android': ['安卓', '安卓体验服'],
+    'ios': ['苹果', 'iphone', 'iOS体验服'],
+    '苹果': ['ios', 'iOS'],
+    '鸿蒙': ['harmony', '鸿蒙体验', '鸿蒙正式'],
+    'harmony': ['鸿蒙'],
+    '崩溃': ['crash', '闪退', '崩溃率'],
+    '趋势': ['走势', 'trend', '变化'],
+    '走势': ['趋势', '变化'],
+    '昨天': ['yesterday', '昨日'],
+    '今天': ['today', '今日'],
+    '最近一周': ['近7天', '这周', '近一周'],
+    '历史问题': ['老问题', '旧问题', '正式服有'],
+    '新问题': ['新增', '新引入'],
+    '体验服': ['exp', '体验版'],
+    '正式服': ['prod', '正式版', '线上'],
+}
+
+
+def _tokenize(text: str) -> list:
+    """中文分词（简单但有效）
+    
+    策略：
+    1. 按空格/标点拆分
+    2. 对长中文串做 bigram 切分
+    3. 保留版本号完整
+    4. 过滤单字和停用词
+    """
+    if not text:
+        return []
+
+    # 先提取版本号（保持完整）
+    versions = _re.findall(r'\d+\.\d+(?:\.\d+)*', text)
+    # 移除版本号后再分词
+    text_clean = _re.sub(r'\d+\.\d+(?:\.\d+)*', ' ', text)
+
+    # 按空格和标点拆分
+    raw = _re.split(r'[\s,，。、！？!?\(\)（）\[\]【】]+', text_clean)
+
+    tokens = []
+    stop_words = {'的', '了', '是', '在', '有', '和', '与', '就', '也', '都', '还', '这', '那', '给', '用',
+                  '我', '你', '他', '它', '们', '吗', '呢', '吧', '啊', '看', '帮', '下', '一下', '看看'}
+
+    for word in raw:
+        word = word.strip().lower()
+        if not word or word in stop_words:
+            continue
+        if len(word) <= 1:
+            continue
+
+        # 英文词直接保留
+        if _re.match(r'^[a-z]+$', word):
+            tokens.append(word)
+            continue
+
+        # 短中文词（2-4字）直接保留
+        if len(word) <= 4:
+            tokens.append(word)
+        else:
+            # 长中文串做 bigram
+            tokens.append(word)  # 保留整体
+            for i in range(len(word) - 1):
+                bi = word[i:i+2]
+                if bi not in stop_words:
+                    tokens.append(bi)
+
+    # 加回版本号
+    tokens.extend(versions)
+
+    return list(dict.fromkeys(tokens))  # 去重保序
+
+
+def _get_synonyms(word: str) -> list:
+    """获取同义词"""
+    word_lower = word.lower()
+    return _SYNONYMS.get(word_lower, [])
+
+
+def _is_version(token: str) -> bool:
+    """判断是否为版本号"""
+    return bool(_re.match(r'^\d+\.\d+', token))
+
+
+def _is_project_keyword(token: str) -> bool:
+    """判断是否为项目关键词"""
+    project_words = {'安卓', 'android', 'ios', '苹果', '鸿蒙', 'harmony',
+                     '体验服', '正式服', '体验', '正式', 'exp', 'prod'}
+    return token.lower() in project_words

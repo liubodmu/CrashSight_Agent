@@ -1,13 +1,12 @@
-"""Report 节点 — 生成最终输出"""
+"""Report 节点 — 生成最终输出（纯数据展示，不依赖 LLM）"""
 import json
-from ...llm_client import call_llm
 from ...config import PROJECTS
 
 
 def report_node(state: dict) -> dict:
     """
     根据意图和工具结果，生成最终回答:
-    - crash_report → 完整 Markdown 报告
+    - crash_report → 核心指标 + TOP10 表格（纯数据，不调 LLM）
     - trend_query → 简短趋势描述
     - issue_detail → 堆栈+设备信息
     - history_check → 是否历史问题
@@ -30,11 +29,17 @@ def report_node(state: dict) -> dict:
         answer = f"抱歉，查询失败: {last_error}\n\n可能原因:\n• CrashSight API 超时/限流\n• 网络连接不稳定\n\n请稍后重试。"
         return {'answer': answer, 'final_status': 'error'}
 
-    # 收集成功的结果
+    # 收集成功的结果（后面的同名 alias 覆盖前面的，recovery 结果优先）
     results = {}
     for obs in observations:
         if obs.get('success') and obs.get('data'):
-            results[obs['alias']] = obs['data']
+            alias = obs['alias']
+            results[alias] = obs['data']
+            # recovery_keystack 包含更新后的 top_issues
+            if alias == 'recovery_keystack' and isinstance(obs['data'], dict):
+                recovered_issues = obs['data'].get('top_issues')
+                if recovered_issues:
+                    results['top_issues'] = recovered_issues
 
     # 根据意图生成回答
     if intent == 'crash_report':
@@ -56,7 +61,7 @@ def report_node(state: dict) -> dict:
 
 
 def _generate_report(project_name, version, start_date, end_date, results) -> str:
-    """用 LLM 生成完整报告"""
+    """纯数据报告：核心指标卡片 + 崩溃趋势 + TOP10 问题详情（不调 LLM）"""
     trend = results.get('trend', {})
     top_issues = results.get('top_issues', [])
 
@@ -64,19 +69,136 @@ def _generate_report(project_name, version, start_date, end_date, results) -> st
     s = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}" if len(start_date) == 8 else start_date
     e = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}" if len(end_date) == 8 else end_date
 
-    prompt = f"""根据以下数据生成崩溃分析报告（Markdown）。
+    lines = []
 
-项目: {project_name} | 版本: {version} | 时间: {s} ~ {e}
+    # ── 标题 ──
+    lines.append(f'# {project_name} 崩溃分析报告')
+    lines.append(f'**版本:** {version}  |  **时间:** {s} ~ {e}')
+    lines.append('')
 
-崩溃率: {json.dumps(trend, ensure_ascii=False)[:500] if trend else '无数据'}
+    # ── 核心指标卡片 ──
+    if trend:
+        min_rate = trend.get('minRate', '0')
+        max_rate = trend.get('maxRate', '0')
+        min_access = trend.get('minAccess', 0)
+        max_access = trend.get('maxAccess', 0)
+        min_crash_user = trend.get('minCrashUser', 0)
+        max_crash_user = trend.get('maxCrashUser', 0)
 
-TOP问题: {json.dumps(top_issues[:5], ensure_ascii=False)[:1500] if top_issues else '无数据'}
+        lines.append('## 核心指标')
+        lines.append('')
+        lines.append(f'| 📉 崩溃率范围 | 📱 联网设备总数 | ⚠️ 影响设备数 |')
+        lines.append(f'|:---:|:---:|:---:|')
+        lines.append(f'| **{min_rate}% - {max_rate}%** | **{_fmt_num(min_access)} - {_fmt_num(max_access)}** | **{_fmt_num(min_crash_user)} - {_fmt_num(max_crash_user)}** |')
+        lines.append('')
 
-要求: 1.概览(崩溃率+风险) 2.TOP问题表格 3.重点分析Top3 4.建议
-直接输出Markdown。"""
+    # ── 崩溃趋势（逐日/逐时数据） ──
+    trend_points = trend.get('trendPoints', []) if trend else []
+    if trend_points:
+        granularity = trend.get('granularity', 'day')
+        date_label = '时间' if granularity == 'hour' else '日期'
+        lines.append('## 📈 崩溃趋势')
+        lines.append('')
+        lines.append(f'| {date_label} | 设备崩溃率(%) | 联网设备数 |')
+        lines.append('|------|:---:|:---:|')
+        for point in trend_points:
+            date = point.get('date', '-')
+            rate = point.get('crashRate', '-')
+            access = point.get('accessUser', '-')
+            lines.append(f'| {date} | {rate} | {_fmt_num(access)} |')
+        lines.append('')
 
-    report = call_llm(prompt)
-    return report or _fallback_report(project_name, version, s, e, trend, top_issues)
+    # ── TOP 10 崩溃问题详情 ──
+    if top_issues:
+        lines.append('## 🔥 TOP 10 崩溃问题详情')
+        lines.append('')
+
+        for i, issue in enumerate(top_issues[:10]):
+            exc_name = issue.get('exceptionName', '-')
+            crash_count = issue.get('crashCount', 0)
+            affected_users = issue.get('affectedUsers', 0)
+            crash_ratio = issue.get('crashRatio', '-')
+            first_version = issue.get('firstCrashVersion', '-')
+            first_time = issue.get('firstUploadTime', '-')
+            key_stack = issue.get('keyStack', '')
+            is_history = issue.get('isHistoryIssue', False)
+            tapd_detail = issue.get('tapdDetail', {})
+            tag_list = issue.get('tagInfoList', [])
+
+            # 状态标签
+            status_tag = '🟡 新问题' if not is_history else '🔴 历史问题'
+
+            lines.append(f'### #{i+1} {exc_name}')
+            lines.append(f'**状态:** {status_tag}  |  **崩溃次数:** {_fmt_num(crash_count)}  |  **影响用户:** {_fmt_num(affected_users)}  |  **占比:** {crash_ratio}%')
+            lines.append('')
+            lines.append(f'- 首发版本: {first_version}')
+            lines.append(f'- 首次上报: {first_time}')
+
+            # 堆栈
+            if key_stack:
+                stack_short = key_stack[:200]
+                lines.append(f'- 堆栈:')
+                lines.append(f'```')
+                lines.append(stack_short)
+                lines.append(f'```')
+
+            # TAPD 特征
+            if tapd_detail:
+                tapd_status = tapd_detail.get('status', '-')
+                tapd_flow = tapd_detail.get('flow', '')
+                tapd_participator = tapd_detail.get('participator', '')
+                tapd_resolve = tapd_detail.get('lastResolveTime', '')
+                tapd_reject_time = tapd_detail.get('rejectTime', '')
+                tapd_url = tapd_detail.get('url', '')
+                tapd_version = tapd_detail.get('version', '')
+                tapd_static_days = tapd_detail.get('staticDays', '')
+
+                tapd_info = f'处理状态：{tapd_status}'
+                if tapd_flow:
+                    tapd_info += f'；流转路径：{tapd_flow}'
+                if tapd_participator:
+                    tapd_info += f'；参与人：{tapd_participator}'
+                if tapd_resolve:
+                    tapd_info += f'；最后解决/拒绝时间：{tapd_resolve}'
+                if tapd_static_days:
+                    tapd_info += f'，超过静默期：{tapd_static_days}'
+                if tapd_version:
+                    tapd_info += f' 有新提单 版本: {tapd_version}'
+                if tapd_url:
+                    tapd_info += f' 链接: {tapd_url}'
+
+                lines.append(f'- 【TAPD特征】{tapd_info}')
+
+            # 堆栈特征
+            if key_stack:
+                lines.append(f'- 【堆栈特征】{exc_name}；关键帧：{key_stack[:80]}')
+
+            # 标签特征
+            if tag_list:
+                tag_names = []
+                for t in (tag_list if isinstance(tag_list, list) else []):
+                    if isinstance(t, dict):
+                        tag_names.append(t.get('tagName') or t.get('name') or str(t.get('tagId', '')))
+                    elif isinstance(t, str):
+                        tag_names.append(t)
+                if tag_names:
+                    lines.append(f'- 【标签特征】业务标签：{"；".join(tag_names[:5])}')
+
+            # 历史问题详情
+            hist = issue.get('historyDetail', {})
+            if is_history and hist:
+                prod_issue = hist.get('prodIssueId', '')
+                prod_url = hist.get('prodUrl', '')
+                lines.append(f'- 【正式服关联】Issue: `{prod_issue}`' + (f' [查看]({prod_url})' if prod_url else ''))
+
+            lines.append('')
+
+    else:
+        lines.append('## TOP 10 崩溃问题')
+        lines.append('')
+        lines.append('本周期内无崩溃问题数据。')
+
+    return '\n'.join(lines)
 
 
 def _generate_trend_answer(project_name, version, start_date, end_date, results) -> str:
@@ -90,15 +212,29 @@ def _generate_trend_answer(project_name, version, start_date, end_date, results)
     min_r = trend.get('minRate', '-')
     max_r = trend.get('maxRate', '-')
     avg_r = trend.get('avgRate', '-')
-    total_access = trend.get('totalAccess', 0)
-    total_crash = trend.get('totalCrashUser', 0)
+    min_access = trend.get('minAccess', 0)
+    max_access = trend.get('maxAccess', 0)
+    min_crash = trend.get('minCrashUser', 0)
+    max_crash = trend.get('maxCrashUser', 0)
 
-    return (
-        f"**{project_name}** {s}~{e} 崩溃率趋势:\n\n"
-        f"• 最低: {min_r}% | 最高: {max_r}% | 平均: {avg_r}%\n"
-        f"• 联网设备: {total_access:,} | 影响设备: {total_crash:,}\n"
-        f"• 版本: {version}"
-    )
+    lines = [
+        f'## {project_name} 崩溃率趋势',
+        f'**版本:** {version}  |  **时间:** {s} ~ {e}',
+        '',
+        f'| 📉 崩溃率范围 | 📱 联网设备总数 | ⚠️ 影响设备数 |',
+        f'|:---:|:---:|:---:|',
+        f'| **{min_r}% - {max_r}%** | **{_fmt_num(min_access)} - {_fmt_num(max_access)}** | **{_fmt_num(min_crash)} - {_fmt_num(max_crash)}** |',
+    ]
+
+    daily_data = trend.get('dailyData', [])
+    if daily_data:
+        lines.append('')
+        lines.append('| 日期 | 崩溃率(%) | 联网设备 | 崩溃设备 |')
+        lines.append('|------|:---:|:---:|:---:|')
+        for day in daily_data:
+            lines.append(f'| {day.get("date","-")} | {day.get("crashRate","-")} | {_fmt_num(day.get("accessCount","-"))} | {_fmt_num(day.get("crashUser","-"))} |')
+
+    return '\n'.join(lines)
 
 
 def _generate_detail_answer(results) -> str:
@@ -142,14 +278,8 @@ def _generate_generic_answer(intent, results) -> str:
     return "查询完成，但未获取到有效数据。"
 
 
-def _fallback_report(project_name, version, start, end, trend, top_issues) -> str:
-    """LLM 不可用时的模板报告"""
-    lines = [f"# {project_name} 崩溃分析报告", f"**{start} ~ {end}** | 版本: {version}\n"]
-    if trend:
-        lines.append(f"崩溃率: {trend.get('minRate','-')}% ~ {trend.get('maxRate','-')}%\n")
-    if top_issues:
-        lines.append("| # | 异常名 | 崩溃次数 | 影响用户 |")
-        lines.append("|---|--------|----------|----------|")
-        for i, iss in enumerate(top_issues[:10]):
-            lines.append(f"| {i+1} | {iss.get('exceptionName','-')[:35]} | {iss.get('crashCount',0)} | {iss.get('affectedUsers',0)} |")
-    return '\n'.join(lines)
+def _fmt_num(n) -> str:
+    """格式化数字：加千分位逗号"""
+    if isinstance(n, (int, float)):
+        return f'{int(n):,}'
+    return str(n)

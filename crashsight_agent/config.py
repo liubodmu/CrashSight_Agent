@@ -92,3 +92,36 @@ TAPD_API = 'https://apiv2.tapd.woa.com'
 LLM_MODEL = os.getenv('LLM_MODEL', 'deepseek-chat')
 LLM_API_KEY = os.getenv('LLM_API_KEY', '')
 LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://api.deepseek.com')
+
+# ==================== Agent 运行参数（原先散落各处的硬编码）====================
+# 数据存储
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
+DB_PATH = os.path.join(DATA_DIR, 'memory.sqlite')
+CHECKPOINT_DB_PATH = os.path.join(DATA_DIR, 'checkpoints.sqlite')
+LOG_DIR = os.path.join(DATA_DIR, 'logs')
+
+# 重试与熔断
+MAX_TOOL_RETRIES = int(os.getenv('MAX_TOOL_RETRIES', '3'))
+CIRCUIT_BREAKER_THRESHOLD = int(os.getenv('CIRCUIT_BREAKER_THRESHOLD', '3'))
+CIRCUIT_BREAKER_RECOVERY_SEC = int(os.getenv('CIRCUIT_BREAKER_RECOVERY_SEC', '60'))
+
+# 并行执行
+MAX_CONCURRENT_ISSUES = int(os.getenv('MAX_CONCURRENT_ISSUES', '3'))
+RATE_LIMIT_PER_MINUTE = int(os.getenv('RATE_LIMIT_PER_MINUTE', '22'))
+
+# Token / 上下文窗口
+MAX_STACK_TOKENS = int(os.getenv('MAX_STACK_TOKENS', '1500'))
+MAX_CONTEXT_TOKENS = int(os.getenv('MAX_CONTEXT_TOKENS', '4000'))
+COMPRESS_THRESHOLD = int(os.getenv('COMPRESS_THRESHOLD', '3000'))
+
+# 搜索与匹配
+HISTORY_SEARCH_LIMIT = int(os.getenv('HISTORY_SEARCH_LIMIT', '10'))
+HISTORY_MAX_CANDIDATES = int(os.getenv('HISTORY_MAX_CANDIDATES', '5'))
+JACCARD_THRESHOLD = float(os.getenv('JACCARD_THRESHOLD', '0.3'))
+
+# API 超时
+API_TIMEOUT = int(os.getenv('API_TIMEOUT', '15'))
+TREND_API_TIMEOUT = int(os.getenv('TREND_API_TIMEOUT', '30'))
+
+# 版本列表
+MAX_VERSIONS_RETURN = int(os.getenv('MAX_VERSIONS_RETURN', '50'))

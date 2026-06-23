@@ -1,4 +1,5 @@
 """日期解析工具 — 将中文日期描述转为 YYYYMMDD 格式"""
+import re
 from datetime import datetime, timedelta
 
 
@@ -13,6 +14,8 @@ def parse_date_range(text: str) -> tuple:
       "上周" → (上周一, 上周日)
       "最近30天" → (30天前, 今天)
       "6月1号到今天" → (20260601, 今天)
+      "2026-06-17~2026-06-23" → (20260617, 20260623)
+      "2026/06/17~2026/06/23" → (20260617, 20260623)
     """
     today = datetime.now()
     text = text.strip()
@@ -42,5 +45,18 @@ def parse_date_range(text: str) -> tuple:
     if '最近3天' in text or '近3天' in text:
         start = today - timedelta(days=2)
         return start.strftime('%Y%m%d'), today.strftime('%Y%m%d')
+
+    # ISO日期范围: "2026-06-17~2026-06-23" 或 "2026/06/17~2026/06/23"
+    m = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*[~\-至到]\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})', text)
+    if m:
+        start_date = f"{m.group(1)}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+        end_date = f"{m.group(4)}{int(m.group(5)):02d}{int(m.group(6)):02d}"
+        return start_date, end_date
+
+    # 单个ISO日期: "2026-06-17"
+    m = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', text)
+    if m:
+        d = f"{m.group(1)}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+        return d, d
 
     return None, None

@@ -107,12 +107,14 @@ def record_feedback(
             source_episodes=f'feedback_{issue_id}_{datetime.now().strftime("%Y%m%d%H%M")}',
         )
         
-        # 更新 feedback 记录
+        # 更新 feedback 记录（取最新一条的 id 来更新，兼容标准 SQLite）
         conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            "UPDATE feedback SET generated_rule=? WHERE issue_id=? ORDER BY id DESC LIMIT 1",
-            (rule_text, issue_id)
-        )
+        row = conn.execute(
+            "SELECT id FROM feedback WHERE issue_id=? ORDER BY id DESC LIMIT 1",
+            (issue_id,)
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE feedback SET generated_rule=? WHERE id=?", (rule_text, row[0]))
         conn.commit()
         conn.close()
 

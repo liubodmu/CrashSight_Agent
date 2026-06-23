@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from . import execute_tool
 from .rate_limiter import api_limiter, api_semaphore
 from ..streaming.events import get_emitter, EventType
+from ..logging import get_logger
 
 
 # 线程池（同步工具在线程里跑，不阻塞事件循环）
@@ -84,6 +85,7 @@ async def _process_single_issue(
     issue_id = issue.get('issueId', '')
     exc_name = issue.get('exceptionName', '')
     emitter = get_emitter()
+    logger = get_logger()
 
     async with semaphore:  # 并发控制
         # ── 拉堆栈 ──
@@ -94,21 +96,27 @@ async def _process_single_issue(
                          node='act')
 
         loop = asyncio.get_event_loop()
+        t_stack = time.time()
         stack_result = await loop.run_in_executor(_thread_pool, execute_tool, 'get_issue_full_stack', {
             'project_id': project_id,
             'issue_id': issue_id,
-            'version': version,
         })
+        stack_ms = int((time.time() - t_stack) * 1000)
 
         call_stack = ''
         if stack_result.get('success') and stack_result.get('data'):
             call_stack = stack_result['data'].get('callStackFull', '') or stack_result['data'].get('callStack', '')
+
+        logger.log_tool_call('get_issue_full_stack', bool(call_stack), stack_ms,
+                             error=stack_result.get('error', '') if not call_stack else '')
+        print(f'[Parallel] [{index+1}/{total}] {exc_name[:30]} stack: {"✓" if call_stack else "✗ 空"} ({stack_ms}ms, {len(call_stack)} chars)')
 
         if not call_stack:
             if emitter:
                 emitter.emit(EventType.WARNING,
                              f'  [{index+1}/{total}] {exc_name[:25]} — 堆栈为空，跳过',
                              node='act')
+            logger.log_history_check(issue_id, '', 'skipped', reason='堆栈为空')
             return {'success': True, 'stack': '', 'history': {'isHistory': False, 'reason': '堆栈为空'}}
 
         # ── 判断历史问题 ──
@@ -118,19 +126,32 @@ async def _process_single_issue(
                          f'  [{index+1}/{total}] {exc_name[:25]} — 🤖 LLM 判断历史问题',
                          node='act')
 
+        t_hist = time.time()
         history_result = await loop.run_in_executor(_thread_pool, execute_tool, 'check_history_issue', {
             'project_id': project_id,
             'issue_id': issue_id,
             'exp_stack': call_stack,
             'exp_exception': exc_name,
         })
+        hist_ms = int((time.time() - t_hist) * 1000)
 
         history_data = history_result.get('data', {}) if history_result.get('success') else {'isHistory': False, 'reason': '判定失败'}
 
+        # 详细日志
+        is_hist = history_data.get('isHistory', False)
+        hist_reason = history_data.get('reason', '') or history_data.get('prodIssueId', '')
+        logger.log_history_check(
+            issue_id, call_stack[:50],
+            'match' if is_hist else 'mismatch',
+            reason=hist_reason,
+            candidates_count=history_data.get('candidatesCount', 0),
+            duration_ms=hist_ms,
+        )
+        label = '✅ 历史问题' if is_hist else '❌ 新问题'
+        print(f'[Parallel] [{index+1}/{total}] {exc_name[:30]} history: {label} ({hist_ms}ms) reason={hist_reason[:60]}')
+
         # 发射结果事件
         if emitter:
-            is_hist = history_data.get('isHistory', False)
-            label = '✅ 历史问题' if is_hist else '❌ 新问题'
             emitter.emit(EventType.HISTORY_RESULT,
                          f'  [{index+1}/{total}] {exc_name[:25]} — {label}',
                          node='act')

@@ -242,24 +242,221 @@
 
         /* Markdown 渲染 */
         .message.assistant h1, .message.assistant h2, .message.assistant h3 {
-            margin: 8px 0 4px;
+            margin: 12px 0 6px;
             color: #f59e0b;
         }
-        .message.assistant h1 { font-size: 16px; }
-        .message.assistant h2 { font-size: 15px; }
-        .message.assistant h3 { font-size: 14px; }
+        .message.assistant h1 { font-size: 18px; border-bottom: 1px solid #333; padding-bottom: 6px; }
+        .message.assistant h2 { font-size: 16px; }
+        .message.assistant h3 { font-size: 14px; color: #e0e0e0; }
         .message.assistant table {
             border-collapse: collapse;
-            margin: 8px 0;
+            margin: 10px 0;
             font-size: 12px;
             width: 100%;
         }
         .message.assistant th, .message.assistant td {
             border: 1px solid #333;
-            padding: 4px 8px;
+            padding: 6px 10px;
             text-align: left;
         }
         .message.assistant th { background: #2a2a2a; color: #f59e0b; }
+        .message.assistant td strong {
+            font-size: 14px;
+            color: #fff;
+        }
+        /* 核心指标卡片表格居中对齐 */
+        .message.assistant td[style*="center"], .message.assistant th[style*="center"] {
+            text-align: center;
+        }
+
+        /* 快捷指令栏 */
+        .quick-panel {
+            padding: 12px 24px;
+            background: #1a1a1a;
+            border-bottom: 1px solid #2a2a2a;
+        }
+        .quick-row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .quick-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .quick-field label {
+            font-size: 12px;
+            color: #888;
+            font-weight: 500;
+        }
+        .quick-row select, .quick-row input[type="date"] {
+            padding: 8px 12px;
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #e0e0e0;
+            font-size: 13px;
+            outline: none;
+            height: 36px;
+        }
+        .quick-row select:focus, .quick-row input[type="date"]:focus { border-color: #f59e0b; }
+        .quick-row select { min-width: 160px; }
+        .quick-row input[type="date"] { min-width: 140px; }
+        .btn-quick {
+            padding: 8px 16px;
+            background: #f59e0b;
+            border: none;
+            border-radius: 6px;
+            color: #000;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            height: 36px;
+        }
+        .btn-quick:hover { background: #fbbf24; }
+
+        /* 多选版本标签组件 */
+        .version-multiselect {
+            position: relative;
+            min-width: 240px;
+        }
+        .version-input-box {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 4px;
+            min-height: 36px;
+            padding: 4px 8px;
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .version-input-box:focus-within,
+        .version-input-box.active { border-color: #f59e0b; }
+        .version-input-box .placeholder {
+            font-size: 13px;
+            color: #555;
+        }
+        .version-tag {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            background: #f59e0b;
+            border: 1px solid #f59e0b;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #000;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+        .version-tag .tag-remove {
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            opacity: 0.7;
+            margin-left: 2px;
+        }
+        .version-tag .tag-remove:hover { opacity: 1; }
+        .version-dropdown-arrow {
+            margin-left: auto;
+            padding-left: 8px;
+            color: #666;
+            font-size: 10px;
+        }
+
+        /* 版本下拉面板 */
+        .version-dropdown {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            min-width: 260px;
+            max-height: 280px;
+            overflow-y: auto;
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            z-index: 100;
+            display: none;
+            padding: 6px 0;
+        }
+        .version-dropdown.show { display: block; }
+        .version-group-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #ccc;
+            transition: background 0.15s;
+        }
+        .version-group-header:hover { background: #2a2a2a; }
+        .version-group-header .arrow {
+            font-size: 10px;
+            transition: transform 0.2s;
+            color: #666;
+        }
+        .version-group-header .arrow.expanded { transform: rotate(90deg); }
+        .version-group-header .group-checkbox {
+            width: 16px;
+            height: 16px;
+            accent-color: #f59e0b;
+        }
+        .version-group-header .group-name { flex: 1; }
+        .version-group-header .group-count {
+            font-size: 11px;
+            color: #666;
+            margin-left: 4px;
+        }
+        .version-group-items {
+            display: none;
+            padding-left: 16px;
+        }
+        .version-group-items.expanded { display: block; }
+        .version-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 12px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #aaa;
+            transition: background 0.15s;
+        }
+        .version-item:hover { background: #2a2a2a; color: #e0e0e0; }
+        .version-item input[type="checkbox"] {
+            width: 14px;
+            height: 14px;
+            accent-color: #f59e0b;
+        }
+
+        /* 快捷时间按钮 */
+        .time-shortcuts {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-top: 8px;
+        }
+        .time-shortcut-btn {
+            padding: 4px 10px;
+            background: transparent;
+            border: 1px solid #333;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #aaa;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .time-shortcut-btn:hover { border-color: #f59e0b; color: #f59e0b; }
+        .time-shortcut-btn.active { background: #f59e0b; color: #000; border-color: #f59e0b; }
 
         /* 滚动条 */
         ::-webkit-scrollbar { width: 6px; }
@@ -311,11 +508,59 @@
 • 对比这周和上周的 Top5</div>
         </div>
 
+        <!-- 快捷指令栏（选择项目/版本/时间 → 生成指令） -->
+        <div class="quick-panel" id="quickPanel">
+            <div class="quick-row">
+                <div class="quick-field">
+                    <label>选择项目</label>
+                    <select id="qProject" onchange="onProjectChange()">
+                        <option value="">选择项目</option>
+                        <option value="android_exp" data-name="安卓体验服">UAMobile体验版_Android</option>
+                        <option value="android_prod" data-name="安卓正式服">UAMobile正式版_Android</option>
+                        <option value="ios_exp" data-name="iOS体验服">UAMobile体验版_iOS</option>
+                        <option value="ios_prod" data-name="iOS正式服">UAMobile正式版_iOS</option>
+                        <option value="harmony_exp" data-name="鸿蒙体验版">UAMobile体验版_Harmony</option>
+                        <option value="harmony_prod" data-name="鸿蒙正式服">UAMobile正式版_Harmony</option>
+                    </select>
+                </div>
+                <div class="quick-field">
+                    <label>版本号（可多选）</label>
+                    <div class="version-multiselect" id="versionMultiselect">
+                        <div class="version-input-box" id="versionInputBox" onclick="toggleVersionDropdown(event)">
+                            <span class="placeholder" id="versionPlaceholder">先选项目</span>
+                            <span class="version-dropdown-arrow">▼</span>
+                        </div>
+                        <div class="version-dropdown" id="versionDropdown">
+                            <!-- 动态填充分组版本列表 -->
+                        </div>
+                    </div>
+                </div>
+                <div class="quick-field">
+                    <label>开始日期</label>
+                    <input type="date" id="qDateStart">
+                </div>
+                <div class="quick-field">
+                    <label>结束日期</label>
+                    <input type="date" id="qDateEnd">
+                </div>
+                <div class="quick-field">
+                    <label>&nbsp;</label>
+                    <button class="btn-quick" onclick="generateCommand()">生成指令</button>
+                </div>
+                <span id="versionLoading" style="font-size:12px;color:#666;display:none;">加载版本中...</span>
+            </div>
+            <div class="time-shortcuts">
+                <span class="time-shortcut-btn" onclick="setTimeShortcut('today', this)">今天</span>
+                <span class="time-shortcut-btn" onclick="setTimeShortcut('7d', this)">最近7天</span>
+                <span class="time-shortcut-btn active" onclick="setTimeShortcut('15d', this)">最近15天</span>
+            </div>
+        </div>
+
         <div class="chips">
-            <span class="chip" onclick="fillInput(this)">安卓体验服 昨天的崩溃</span>
-            <span class="chip" onclick="fillInput(this)">iOS体验服 最近一周趋势</span>
-            <span class="chip" onclick="fillInput(this)">鸿蒙体验版 今天的数据</span>
             <span class="chip" onclick="fillInput(this)">Top1 是历史问题吗</span>
+            <span class="chip" onclick="fillInput(this)">崩溃率趋势</span>
+            <span class="chip" onclick="fillInput(this)">Top1 完整堆栈</span>
+            <span class="chip" onclick="fillInput(this)">TAPD 什么状态</span>
         </div>
 
         <div class="input-area">
@@ -447,27 +692,78 @@
         }
 
         function renderMarkdown(text) {
-            let html = text
-                .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
-                .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-                .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-                .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                .replace(/\|(.+)\|/g, function(match) {
-                    if (match.match(/^\|[\s\-:]+\|$/)) return '';
-                    const cells = match.split('|').filter(c => c.trim());
-                    const isHeader = cells.some(c => c.includes('**'));
-                    const tag = isHeader ? 'th' : 'td';
-                    return '<tr>' + cells.map(c => `<${tag}>${c.trim().replace(/\*\*/g, '')}</${tag}>`).join('') + '</tr>';
-                })
-                .replace(/^[•\-\*] (.+)$/gm, '• $1')
-                .replace(/\n/g, '<br>');
+            // 先处理代码块（避免干扰表格解析）
+            const codeBlocks = [];
+            text = text.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, lang, code) {
+                codeBlocks.push(`<pre><code>${code.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`);
+                return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
+            });
 
-            if (html.includes('<tr>')) {
-                html = html.replace(/((?:<tr>.*?<\/tr><br>?)+)/gs, '<table>$1</table>');
+            // 解析表格（逐行处理，正确区分 header/separator/body）
+            const lines = text.split('\n');
+            let result = [];
+            let inTable = false;
+            let headerDone = false;
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                // 检测表格行
+                if (line.startsWith('|') && line.endsWith('|')) {
+                    // 分隔行（|---|---|  |:---:|:---:|）→ 标记header完成，跳过
+                    if (line.match(/^\|[\s\-:]+(\|[\s\-:]+)+\|$/)) {
+                        headerDone = true;
+                        continue;
+                    }
+                    const cells = line.split('|').slice(1, -1);
+                    if (!inTable) {
+                        // 第一行表格 → header
+                        inTable = true;
+                        headerDone = false;
+                        result.push('<table><thead><tr>' + cells.map(c => `<th>${_inlineMd(c.trim())}</th>`).join('') + '</tr></thead><tbody>');
+                    } else {
+                        // body 行
+                        result.push('<tr>' + cells.map(c => `<td>${_inlineMd(c.trim())}</td>`).join('') + '</tr>');
+                    }
+                } else {
+                    // 非表格行
+                    if (inTable) {
+                        result.push('</tbody></table>');
+                        inTable = false;
+                        headerDone = false;
+                    }
+                    result.push(line);
+                }
             }
+            if (inTable) result.push('</tbody></table>');
+
+            let html = result.join('\n');
+
+            // 标题
+            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            // 内联格式
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // 列表
+            html = html.replace(/^[•\-\*] (.+)$/gm, '• $1');
+            // 链接
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#f59e0b">$1</a>');
+            // 换行
+            html = html.replace(/\n/g, '<br>');
+
+            // 还原代码块
+            codeBlocks.forEach((block, idx) => {
+                html = html.replace(`%%CODEBLOCK_${idx}%%`, block);
+            });
+
             return html;
+        }
+
+        function _inlineMd(text) {
+            return text
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>');
         }
 
         // ========== 发送消息（SSE 流式）==========
@@ -570,6 +866,223 @@
         // Chip 点击 → 填入输入框，不发送
         function fillInput(el) {
             input.value = el.textContent;
+            input.focus();
+        }
+
+        // ========== 版本多选组件 ==========
+        let selectedVersions = [];
+        let versionGroups = {};
+        let allVersions = [];
+
+        // 初始化日期（默认最近15天）
+        function initDates() {
+            const end = new Date();
+            const start = new Date();
+            start.setDate(start.getDate() - 14);
+            document.getElementById('qDateEnd').value = formatDate(end);
+            document.getElementById('qDateStart').value = formatDate(start);
+        }
+        function formatDate(d) {
+            return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        }
+        initDates();
+
+        // 时间快捷按钮
+        function setTimeShortcut(type, el) {
+            document.querySelectorAll('.time-shortcut-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            const end = new Date();
+            const start = new Date();
+            if (type === 'today') { /* start = today */ }
+            else if (type === '7d') { start.setDate(start.getDate() - 6); }
+            else if (type === '15d') { start.setDate(start.getDate() - 14); }
+            document.getElementById('qDateEnd').value = formatDate(end);
+            document.getElementById('qDateStart').value = formatDate(start);
+        }
+
+        // 选项目后动态加载版本列表
+        async function onProjectChange() {
+            const projectSelect = document.getElementById('qProject');
+            const loading = document.getElementById('versionLoading');
+            const projectId = projectSelect.value;
+
+            // 清空已选版本
+            selectedVersions = [];
+            versionGroups = {};
+            allVersions = [];
+            renderVersionTags();
+
+            if (!projectId) {
+                document.getElementById('versionPlaceholder').textContent = '先选项目';
+                document.getElementById('versionDropdown').innerHTML = '';
+                return;
+            }
+
+            document.getElementById('versionPlaceholder').textContent = '加载中...';
+            loading.style.display = 'inline';
+
+            try {
+                const resp = await fetch(`/api/versions/${projectId}`);
+                const data = await resp.json();
+
+                if (data.success && data.data && data.data.length > 0) {
+                    allVersions = data.data;
+                    // 按前缀分组（取前两位，如 3.7.* / 0.8.*）
+                    versionGroups = {};
+                    allVersions.forEach(v => {
+                        const parts = v.split('.');
+                        const prefix = parts.length >= 2 ? parts[0] + '.' + parts[1] + '.*' : v;
+                        if (!versionGroups[prefix]) versionGroups[prefix] = [];
+                        versionGroups[prefix].push(v);
+                    });
+                    renderVersionDropdown();
+                    document.getElementById('versionPlaceholder').textContent = '选择版本';
+                } else {
+                    document.getElementById('versionPlaceholder').textContent = '无版本数据';
+                    document.getElementById('versionDropdown').innerHTML = '';
+                }
+            } catch (e) {
+                document.getElementById('versionPlaceholder').textContent = '加载失败';
+                document.getElementById('versionDropdown').innerHTML = '';
+            }
+
+            loading.style.display = 'none';
+        }
+
+        function renderVersionDropdown() {
+            const dropdown = document.getElementById('versionDropdown');
+            let html = '';
+            for (const [prefix, versions] of Object.entries(versionGroups)) {
+                const allChecked = versions.every(v => selectedVersions.includes(v));
+                const someChecked = versions.some(v => selectedVersions.includes(v));
+                html += `<div class="version-group">
+                    <div class="version-group-header" onclick="toggleGroup(this, event)">
+                        <span class="arrow">▶</span>
+                        <input type="checkbox" class="group-checkbox" 
+                            ${allChecked ? 'checked' : ''} 
+                            ${someChecked && !allChecked ? 'indeterminate' : ''}
+                            onclick="toggleGroupCheck(this, '${prefix}', event)">
+                        <span class="group-name">${prefix}</span>
+                        <span class="group-count">(${versions.length})</span>
+                    </div>
+                    <div class="version-group-items">
+                        ${versions.map(v => `
+                            <div class="version-item" onclick="toggleVersion('${v}', event)">
+                                <input type="checkbox" ${selectedVersions.includes(v) ? 'checked' : ''}>
+                                <span>${v}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>`;
+            }
+            dropdown.innerHTML = html;
+            // 设置 indeterminate 状态
+            dropdown.querySelectorAll('.version-group').forEach(g => {
+                const cb = g.querySelector('.group-checkbox');
+                const items = g.querySelectorAll('.version-item input[type="checkbox"]');
+                const checked = [...items].filter(i => i.checked).length;
+                if (checked > 0 && checked < items.length) cb.indeterminate = true;
+            });
+        }
+
+        function toggleVersionDropdown(event) {
+            event.stopPropagation();
+            const dropdown = document.getElementById('versionDropdown');
+            const inputBox = document.getElementById('versionInputBox');
+            if (!allVersions.length) return;
+            dropdown.classList.toggle('show');
+            inputBox.classList.toggle('active', dropdown.classList.contains('show'));
+        }
+
+        function toggleGroup(header, event) {
+            event.stopPropagation();
+            const arrow = header.querySelector('.arrow');
+            const items = header.nextElementSibling;
+            arrow.classList.toggle('expanded');
+            items.classList.toggle('expanded');
+        }
+
+        function toggleGroupCheck(checkbox, prefix, event) {
+            event.stopPropagation();
+            const versions = versionGroups[prefix] || [];
+            if (checkbox.checked) {
+                versions.forEach(v => { if (!selectedVersions.includes(v)) selectedVersions.push(v); });
+            } else {
+                versions.forEach(v => { selectedVersions = selectedVersions.filter(sv => sv !== v); });
+            }
+            renderVersionTags();
+            renderVersionDropdown();
+        }
+
+        function toggleVersion(version, event) {
+            event.stopPropagation();
+            if (selectedVersions.includes(version)) {
+                selectedVersions = selectedVersions.filter(v => v !== version);
+            } else {
+                selectedVersions.push(version);
+            }
+            renderVersionTags();
+            renderVersionDropdown();
+        }
+
+        function removeVersion(version, event) {
+            event.stopPropagation();
+            selectedVersions = selectedVersions.filter(v => v !== version);
+            renderVersionTags();
+            renderVersionDropdown();
+        }
+
+        function renderVersionTags() {
+            const inputBox = document.getElementById('versionInputBox');
+            const placeholder = document.getElementById('versionPlaceholder');
+            // 移除已有标签
+            inputBox.querySelectorAll('.version-tag').forEach(t => t.remove());
+
+            if (selectedVersions.length === 0) {
+                placeholder.style.display = 'inline';
+            } else {
+                placeholder.style.display = 'none';
+                const arrow = inputBox.querySelector('.version-dropdown-arrow');
+                selectedVersions.forEach(v => {
+                    const tag = document.createElement('span');
+                    tag.className = 'version-tag';
+                    tag.innerHTML = `${v}<span class="tag-remove" onclick="removeVersion('${v}', event)">×</span>`;
+                    inputBox.insertBefore(tag, arrow);
+                });
+            }
+        }
+
+        // 点击外部关闭下拉
+        document.addEventListener('click', function(e) {
+            const ms = document.getElementById('versionMultiselect');
+            if (!ms.contains(e.target)) {
+                document.getElementById('versionDropdown').classList.remove('show');
+                document.getElementById('versionInputBox').classList.remove('active');
+            }
+        });
+
+        // 快捷指令：选择项目/版本/时间 → 生成自然语言指令填入输入框
+        function generateCommand() {
+            const projectSelect = document.getElementById('qProject');
+            const projectName = projectSelect.selectedOptions[0]?.dataset?.name || '';
+
+            if (!projectName) {
+                alert('请选择项目');
+                return;
+            }
+
+            let cmd = projectName;
+            if (selectedVersions.length > 0) {
+                cmd += ' ' + selectedVersions.join(',');
+            }
+            const startDate = document.getElementById('qDateStart').value;
+            const endDate = document.getElementById('qDateEnd').value;
+            if (startDate && endDate) {
+                cmd += ' ' + startDate + '~' + endDate;
+            }
+            cmd += ' 的崩溃top10';
+
+            input.value = cmd;
             input.focus();
         }
     </script>

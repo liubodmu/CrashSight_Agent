@@ -90,6 +90,20 @@ def _layer1_keyword_match(query: str, today: datetime) -> dict:
             start_date, end_date = date_fn(today)
             break
 
+    # ISO日期范围匹配: "2026-06-17~2026-06-23" 或 "2026/06/17~2026/06/23" 或 "2026-06-17-2026-06-23"
+    if not start_date:
+        m = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s*[~\-至到]\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})', query)
+        if m:
+            start_date = f"{m.group(1)}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+            end_date = f"{m.group(4)}{int(m.group(5)):02d}{int(m.group(6)):02d}"
+
+    # 单个ISO日期: "2026-06-17" 或 "2026/06/17"
+    if not start_date:
+        m = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', query)
+        if m:
+            start_date = f"{m.group(1)}{int(m.group(2)):02d}{int(m.group(3)):02d}"
+            end_date = start_date
+
     # 精确日期匹配: "6月1号到今天" / "20号" 等
     if not start_date:
         m = re.search(r'(\d{1,2})[月.](\d{1,2})[号日]', query)
@@ -101,21 +115,28 @@ def _layer1_keyword_match(query: str, today: datetime) -> dict:
             m2 = re.search(r'到.*?(?:今天|现在)', query)
             end_date = today.strftime('%Y%m%d') if m2 else start_date
 
-    # 4. 版本匹配
+    # 4. 版本匹配（支持逗号分隔的多版本）
     version = None
-    vm = VERSION_PATTERN.search(query)
-    if vm:
-        ver = vm.group(1)
-        # "3.7" → "3.7.*"
-        if ver.count('.') == 1:
-            version = ver + '.*'
-        else:
-            version = ver
+    # 先尝试匹配逗号分隔的多版本: "3.7.375.375.375,3.7.376.376.376"
+    multi_vm = re.search(r'(\d+\.\d+(?:\.\d+)*(?:,\d+\.\d+(?:\.\d+)*)+)', query)
+    if multi_vm:
+        version = multi_vm.group(1)  # 保留逗号分隔格式
+    else:
+        vm = VERSION_PATTERN.search(query)
+        if vm:
+            ver = vm.group(1)
+            # "3.7" → "3.7.*"
+            if ver.count('.') == 1:
+                version = ver + '.*'
+            else:
+                version = ver
 
     # 5. 判断参数是否完整
     missing = []
     if not project_id:
         missing.append('project_id')
+    if intent == 'crash_report' and not version:
+        missing.append('version')
     if intent in ('crash_report', 'trend_query', 'compare') and not start_date:
         missing.append('date_range')
 

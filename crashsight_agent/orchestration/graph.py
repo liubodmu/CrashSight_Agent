@@ -36,8 +36,12 @@ def observe_decide(state: dict) -> str:
     """Observe 之后的条件路由"""
     final_status = state.get('final_status', 'ok')
 
-    # 需要重试 → 回到 act
+    # 需要重试（原参数）→ 回到 act
     if final_status == 'retry':
+        return 'act'
+
+    # 需要恢复（新策略）→ 回到 act（act 节点会读取 recovery_strategy）
+    if final_status == 'recover':
         return 'act'
 
     # 成功或错误 → 生成报告

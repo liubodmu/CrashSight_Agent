@@ -150,14 +150,43 @@ class EventEmitter:
         self.events = []
 
 
-# 全局单例（供各节点使用）
-_current_emitter: Optional[EventEmitter] = None
+# 按会话隔离的 Emitter（线程安全）
+import threading
+
+_emitter_store: dict[str, EventEmitter] = {}
+_emitter_lock = threading.Lock()
+_current_session_id = threading.local()
 
 
 def get_emitter() -> Optional[EventEmitter]:
-    return _current_emitter
+    """获取当前线程/会话对应的 Emitter"""
+    sid = getattr(_current_session_id, 'value', None)
+    if sid:
+        with _emitter_lock:
+            return _emitter_store.get(sid)
+    # 兼容旧代码：无 session_id 时返回 None
+    return None
 
 
-def set_emitter(emitter: Optional[EventEmitter]):
-    global _current_emitter
-    _current_emitter = emitter
+def set_emitter(emitter: Optional[EventEmitter], session_id: str = ''):
+    """设置当前会话的 Emitter（线程安全）"""
+    if session_id:
+        _current_session_id.value = session_id
+        with _emitter_lock:
+            if emitter is None:
+                _emitter_store.pop(session_id, None)
+            else:
+                _emitter_store[session_id] = emitter
+    else:
+        # 兼容旧调用（无 session_id）
+        _current_session_id.value = '__default__'
+        with _emitter_lock:
+            if emitter is None:
+                _emitter_store.pop('__default__', None)
+            else:
+                _emitter_store['__default__'] = emitter
+
+
+def bind_session(session_id: str):
+    """在当前线程绑定 session_id（子线程继承用）"""
+    _current_session_id.value = session_id

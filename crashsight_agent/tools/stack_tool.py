@@ -17,6 +17,8 @@ def execute(project_id: str, issue_id: str, version: str = '-1') -> dict:
     platform_id = project['pid']
 
     # 第一步：获取最新 crashHash
+    # 注意：不传 version 筛选，直接用 issueId 取最新崩溃记录
+    # exceptionTypeList 留空以覆盖所有异常类型（含自定义上报）
     body1 = {
         'appId': app_id,
         'platformId': int(platform_id),
@@ -24,12 +26,9 @@ def execute(project_id: str, issue_id: str, version: str = '-1') -> dict:
         'issueId': issue_id,
         'crashDataType': 'undefined',
         'searchType': 'detail',
-        'exceptionTypeList': 'Crash,Native,ExtensionCrash',
         'rows': 1,
         'start': 0,
     }
-    if version and version != '-1':
-        body1['version'] = version
 
     data1 = openapi_post(f'{CRASHSIGHT_BASE}/uniform/openapi/crashList', body1, timeout=15)
     ret = data1.get('ret', {})
@@ -37,6 +36,7 @@ def execute(project_id: str, issue_id: str, version: str = '-1') -> dict:
     crash_datas = ret.get('crashDatas', {})
 
     if not crash_id_list:
+        print(f'[Stack] issue={issue_id[:12]} crashIdList为空, API返回ret={str(ret)[:200]}')
         return {'callStack': '', 'rawCallStack': '', 'error': 'crashIdList为空'}
 
     crash_hash = crash_id_list[0]
