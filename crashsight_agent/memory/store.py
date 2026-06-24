@@ -89,6 +89,10 @@ class MemoryStore:
         # 自动触发 Skill 提炼
         self._try_extract_skill(query, intent, project_id, version)
 
+        # 失败时触发自动反思（三层联动）
+        if not success:
+            self._check_failure_pattern(intent, project_id)
+
     def find_similar_episodes(self, query: str, limit: int = 5) -> list:
         """查找相似的历史查询（多策略匹配 + 相似度打分）
         
@@ -177,6 +181,55 @@ class MemoryStore:
         conn.close()
         return [dict(row) for row in rows]
 
+    def mark_episode_used(self, episode_id: int):
+        """标记某条记忆被 Layer2 命中过（续命，提升重要性）"""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "UPDATE episodic SET importance = MIN(importance + 0.2, 1.0) WHERE id=?",
+            (episode_id,)
+        )
+        conn.commit()
+        conn.close()
+
+    def cleanup_episodes(self, max_age_days: int = 90, max_count: int = 5000):
+        """遗忘机制：清理过期/低重要性的记忆
+        
+        策略：
+        1. 超过 max_age_days 天 且 importance < 0.5 的 → 删除
+        2. 总数超过 max_count 时 → 按 importance 排序，删末尾的
+        3. 被 Layer2 命中过的（importance 高）→ 续命，不删
+        """
+        conn = sqlite3.connect(self.db_path)
+
+        # 策略1: 过期 + 低重要性 → 删除
+        deleted_age = conn.execute(
+            """DELETE FROM episodic 
+               WHERE created_at < datetime('now', '-' || ? || ' days') 
+               AND importance < 0.5""",
+            (max_age_days,)
+        ).rowcount
+
+        # 策略2: 总数超限 → 删最不重要的
+        total = conn.execute("SELECT COUNT(*) FROM episodic").fetchone()[0]
+        deleted_overflow = 0
+        if total > max_count:
+            overflow = total - max_count
+            conn.execute(
+                """DELETE FROM episodic WHERE id IN (
+                    SELECT id FROM episodic ORDER BY importance ASC, created_at ASC LIMIT ?
+                )""",
+                (overflow,)
+            )
+            deleted_overflow = overflow
+
+        conn.commit()
+        conn.close()
+
+        total_deleted = deleted_age + deleted_overflow
+        if total_deleted > 0:
+            print(f'[Memory] 遗忘: 清理了 {total_deleted} 条过期记忆 (过期{deleted_age} + 溢出{deleted_overflow})')
+        return total_deleted
+
     # ==================== Skill Memory ====================
 
     def _try_extract_skill(self, query: str, intent: str, project_id: str, version: str):
@@ -238,6 +291,39 @@ class MemoryStore:
 
         return dict(row) if row else None
 
+    def get_default_params(self, intent: str, project_id: str) -> dict:
+        """Skill 参数补全：根据用户高频模式推断默认参数
+        
+        查看该 intent+project 最近 10 次成功记录，统计最常用的 version 和时间模式。
+        如果某个 version 出现 >= 60%，就作为默认值推荐。
+        
+        返回: {'version': '3.7.*', 'time_pattern': '昨天'} 或 {}
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT version, start_date, end_date FROM episodic 
+               WHERE intent=? AND project_id=? AND success=1 
+               ORDER BY created_at DESC LIMIT 10""",
+            (intent, project_id)
+        ).fetchall()
+        conn.close()
+
+        if len(rows) < 3:
+            return {}  # 样本不够，不做推断
+
+        # 统计 version 频率
+        versions = [r['version'] for r in rows if r['version']]
+        defaults = {}
+        if versions:
+            from collections import Counter
+            vc = Counter(versions)
+            most_common_ver, count = vc.most_common(1)[0]
+            if count / len(rows) >= 0.6:  # 60% 以上用同一个版本
+                defaults['version'] = most_common_ver
+
+        return defaults
+
     def get_all_skills(self) -> list:
         """获取所有 Skill"""
         conn = sqlite3.connect(self.db_path)
@@ -245,6 +331,56 @@ class MemoryStore:
         rows = conn.execute("SELECT * FROM skill ORDER BY use_count DESC").fetchall()
         conn.close()
         return [dict(row) for row in rows]
+
+    # ==================== 三层联动：失败自动反思 ====================
+
+    def _check_failure_pattern(self, intent: str, project_id: str):
+        """检测失败模式，连续失败 3 次自动触发规则提炼
+        
+        三层联动逻辑：
+        Episodic 层发现"同一模式连续失败" → 自动提炼规则存入 Semantic Rule 层
+        不需要等用户反馈，系统自己能发现问题。
+        """
+        conn = sqlite3.connect(self.db_path)
+        # 查最近 5 条该模式的记录
+        rows = conn.execute(
+            """SELECT success, answer_summary FROM episodic 
+               WHERE intent=? AND project_id=? 
+               ORDER BY created_at DESC LIMIT 5""",
+            (intent, project_id)
+        ).fetchall()
+        conn.close()
+
+        if len(rows) < 3:
+            return
+
+        # 最近 3 条都失败了？
+        recent_3 = [r[0] for r in rows[:3]]
+        if sum(recent_3) > 0:
+            return  # 有成功的，不算连续失败
+
+        # 连续 3 次失败 → 自动提炼规则
+        failure_summaries = [r[1] for r in rows[:3] if r[1]]
+        if not failure_summaries:
+            return
+
+        # 生成一条自动规则（不调 LLM，用模板）
+        pattern_desc = f"{intent}_{project_id}"
+        auto_rule = f"当执行 {pattern_desc} 连续失败时，考虑放宽版本参数或调整时间范围"
+
+        # 检查是否已有类似规则
+        existing = self.get_active_rules(category='auto_reflect')
+        for r in existing:
+            if pattern_desc in r.get('rule_text', ''):
+                return  # 已有，不重复添加
+
+        self.add_rule(
+            rule_text=auto_rule,
+            category='auto_reflect',
+            confidence=0.7,
+            source_episodes=f'auto_failure_{pattern_desc}',
+        )
+        print(f'[Memory] 三层联动: {pattern_desc} 连续失败3次，自动提炼规则')
 
     # ==================== Semantic Rule ====================
 
@@ -277,8 +413,33 @@ class MemoryStore:
         conn.close()
         return [dict(row) for row in rows]
 
+    def reinforce_rule(self, rule_id: int, positive: bool):
+        """规则验证闭环：判对加分 / 判错扣分
+        
+        Args:
+            rule_id: 规则 ID
+            positive: True=规则帮助 LLM 判对了，False=注入了但仍判错
+        """
+        conn = sqlite3.connect(self.db_path)
+        if positive:
+            # 判对了 → 加分（有效规则越用越强）
+            conn.execute(
+                "UPDATE semantic_rule SET confidence = MIN(confidence + 0.05, 1.0) WHERE id=?",
+                (rule_id,)
+            )
+        else:
+            # 判错了 → 扣分（比自然衰减快，无效规则快速淘汰）
+            conn.execute(
+                "UPDATE semantic_rule SET confidence = confidence - 0.15 WHERE id=?",
+                (rule_id,)
+            )
+            # 低于阈值直接失活
+            conn.execute("UPDATE semantic_rule SET active=0 WHERE id=? AND confidence < 0.3", (rule_id,))
+        conn.commit()
+        conn.close()
+
     def decay_rules(self, decay_rate: float = 0.05):
-        """规则衰减（定期调用，降低老规则置信度）"""
+        """规则自然衰减（定期调用，降低老规则置信度）"""
         conn = sqlite3.connect(self.db_path)
         conn.execute(
             "UPDATE semantic_rule SET confidence = confidence - ? WHERE active=1 AND confidence > 0.3",

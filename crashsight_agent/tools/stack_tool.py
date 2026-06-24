@@ -37,7 +37,7 @@ def execute(project_id: str, issue_id: str, version: str = '-1') -> dict:
 
     if not crash_id_list:
         print(f'[Stack] issue={issue_id[:12]} crashIdList为空, API返回ret={str(ret)[:200]}')
-        return {'callStack': '', 'rawCallStack': '', 'error': 'crashIdList为空'}
+        raise ValueError(f'crashIdList为空 (issue={issue_id[:12]})')
 
     crash_hash = crash_id_list[0]
     crash_info = crash_datas.get(crash_hash, {})

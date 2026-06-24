@@ -1,15 +1,19 @@
-"""LLM 调用客户端 — 统一封装 OpenAI 兼容接口"""
+"""LLM 调用客户端 — 统一封装 OpenAI 兼容接口（线程安全）"""
+import threading
 from openai import OpenAI
 from .config import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL
 
 
 _client = None
+_client_lock = threading.Lock()
 
 
 def get_client() -> OpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        with _client_lock:
+            if _client is None:  # 双重检查锁定
+                _client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
     return _client
 
 

@@ -1,24 +1,28 @@
 """CrashSight Agent — FastAPI Web 服务（支持 SSE 流式推理输出）"""
 import json
 import asyncio
+import threading
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from crashsight_agent.orchestration.agent import CrashSightAgent
-from crashsight_agent.streaming.events import EventEmitter, set_emitter, EventType
+from crashsight_agent.streaming.events import EventEmitter, set_emitter, bind_session, EventType
+from crashsight_agent.logging.logger import bind_logger_session
 
 app = FastAPI(title="CrashSight Analysis Agent")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# 会话管理
+# 会话管理（线程安全）
 _sessions: dict[str, CrashSightAgent] = {}
+_sessions_lock = threading.Lock()
 
 
 def _get_agent(session_id: str) -> CrashSightAgent:
-    if session_id not in _sessions:
-        _sessions[session_id] = CrashSightAgent(thread_id=session_id)
-    return _sessions[session_id]
+    with _sessions_lock:
+        if session_id not in _sessions:
+            _sessions[session_id] = CrashSightAgent(thread_id=session_id)
+        return _sessions[session_id]
 
 
 @app.post("/api/chat")
@@ -55,20 +59,25 @@ async def chat_stream(request: Request):
     agent = _get_agent(session_id)
 
     async def event_generator():
-        # 创建事件发射器
+        # 创建事件发射器（绑定到当前 session）
         emitter = EventEmitter()
         queue = emitter.enable_async()
 
-        # 设置全局 emitter（供节点使用）
-        set_emitter(emitter)
+        # 设置当前 session 的 emitter（线程隔离）
+        set_emitter(emitter, session_id=session_id)
 
         # 发送开始事件
         emitter.emit(EventType.AGENT_START, '开始处理...', node='agent')
         yield emitter.events[-1].to_sse()
 
-        # 在线程池中运行 Agent（不阻塞事件循环）
+        # 在线程池中运行 Agent（绑定 session 上下文）
+        def _run_with_context():
+            bind_session(session_id)
+            bind_logger_session(session_id)
+            return agent.chat(query)
+
         loop = asyncio.get_event_loop()
-        task = loop.run_in_executor(None, agent.chat, query)
+        task = loop.run_in_executor(None, _run_with_context)
 
         # 边执行边消费事件队列
         while True:
@@ -95,8 +104,8 @@ async def chat_stream(request: Request):
         # 发送结束标记
         yield f"data: {json.dumps({'type': 'agent_end', 'message': '完成'}, ensure_ascii=False)}\n\n"
 
-        # 清理全局 emitter
-        set_emitter(None)
+        # 清理当前 session 的 emitter
+        set_emitter(None, session_id=session_id)
 
     return StreamingResponse(
         event_generator(),

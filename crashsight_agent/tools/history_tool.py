@@ -216,14 +216,93 @@ def _get_candidate_stack(cand: dict, app_id: str, platform_id: int) -> str:
 
 # ==================== LLM 对比判断（替代 _hard_anchor_match + Jaccard）====================
 
+# 规则缓存（避免每次都查数据库）
+_rules_cache = {'rules': [], 'last_refresh': 0}
+_RULES_CACHE_TTL = 60  # 缓存 60 秒
+
+
+def _get_relevant_rules(key_frame: str, exc_a: str, stack_a: str) -> list:
+    """获取与当前堆栈相关的规则（智能匹配，限制数量）
+    
+    策略：
+    1. 从 DB 读所有活跃规则（带缓存）
+    2. 按相关性打分：规则文本中包含当前堆栈的关键词则加分
+    3. 取 top 5 条最相关的
+    4. 如果没有相关规则，不注入（避免无关规则干扰 LLM）
+    """
+    import time as _time
+
+    # 带缓存读取
+    now = _time.time()
+    if now - _rules_cache['last_refresh'] > _RULES_CACHE_TTL:
+        _rules_cache['rules'] = _memory.get_active_rules(category='history_compare')
+        _rules_cache['last_refresh'] = now
+
+    all_rules = _rules_cache['rules']
+    if not all_rules:
+        return []
+
+    # 提取当前上下文的关键词（用于匹配规则相关性）
+    context_keywords = set()
+    # 从关键帧提取
+    if key_frame:
+        for part in key_frame.replace('::', ' ').replace('(', ' ').replace(')', ' ').split():
+            if len(part) >= 3:
+                context_keywords.add(part.lower())
+    # 从异常类型提取
+    if exc_a:
+        context_keywords.add(exc_a.lower().split('(')[0])  # SIGSEGV
+    # 从堆栈提取模块名
+    for line in stack_a.split('\n')[:10]:
+        if '.so' in line:
+            import re
+            so_match = re.search(r'(lib\w+\.so)', line)
+            if so_match:
+                context_keywords.add(so_match.group(1).lower())
+        if 'art::gc' in line.lower():
+            context_keywords.add('gc')
+            context_keywords.add('art')
+
+    # 给每条规则打相关性分
+    scored_rules = []
+    for rule in all_rules:
+        rule_text = rule.get('rule_text', '').lower()
+        score = rule.get('confidence', 0.7)  # 基础分=confidence
+
+        # 关键词命中加分
+        hits = sum(1 for kw in context_keywords if kw in rule_text)
+        score += hits * 0.2
+
+        # 完全无关的规则不要（0命中且不是通用规则）
+        is_general = any(w in rule_text for w in ['当', '应', '如果', '注意'])
+        if hits == 0 and not is_general:
+            continue
+
+        scored_rules.append((score, rule['rule_text']))
+
+    # 按分数排序，取 top 5
+    scored_rules.sort(key=lambda x: -x[0])
+    return [text for _, text in scored_rules[:5]]
+
+
 def _llm_compare_stacks(stack_a: str, stack_b: str, exc_a: str, exc_b: str, key_frame: str) -> bool:
     """用 LLM 判断两个崩溃堆栈是否为同一 Bug
     
-    把关键帧信息也告诉 LLM，帮助它聚焦核心比对区域
+    增强：注入从用户反馈中学到的相关规则（智能匹配 + 限数量）
     """
     # 截断堆栈避免 token 过长（保留关键帧附近）
     stack_a_short = _truncate_around_keyframe(stack_a, key_frame, context_lines=12)
     stack_b_short = _truncate_around_keyframe(stack_b, key_frame, context_lines=12)
+
+    # 获取相关规则（最多 5 条，按相关性排序）
+    learned_rules = _get_relevant_rules(key_frame, exc_a, stack_a)
+    rules_section = ''
+    if learned_rules:
+        rules_text = '\n'.join([f'- {r}' for r in learned_rules])
+        rules_section = f"""
+## 历史经验（从过往纠错中学到的，请重点参考）
+{rules_text}
+"""
 
     prompt = f"""你是一个崩溃分析专家。请判断以下两个崩溃堆栈是否属于同一个 Bug（同一根因）。
 
@@ -248,7 +327,7 @@ def _llm_compare_stacks(stack_a: str, stack_b: str, exc_a: str, exc_b: str, key_
 3. 允许编译器优化导致的帧序微小变化（如中间多/少几帧框架函数）
 4. 忽略线程入口、系统框架等通用帧的差异
 5. 核心判断标准：崩溃的根因函数 + 上下文调用路径是否一致
-
+{rules_section}
 请只回答 YES 或 NO，然后用一句话说明理由。
 格式: YES/NO: 理由"""
 
@@ -260,7 +339,8 @@ def _llm_compare_stacks(stack_a: str, stack_b: str, exc_a: str, exc_b: str, key_
     answer = response.strip().upper()
     is_same = answer.startswith('YES')
     reason = response.strip().split(':', 1)[1].strip() if ':' in response else response.strip()
-    print(f'[History]   LLM 判定: {"✓ Match" if is_same else "✗ Mismatch"} | {reason[:60]}')
+    rules_count = len(learned_rules)
+    print(f'[History]   LLM 判定: {"✓ Match" if is_same else "✗ Mismatch"} | {reason[:60]} (注入{rules_count}条规则)')
     return is_same
 
 

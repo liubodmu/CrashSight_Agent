@@ -109,6 +109,9 @@ def build_graph():
     # report → END
     graph.add_edge('report', END)
 
-    # 编译，带 SQLite Checkpointer（状态持久化）
-    checkpointer = SqliteSaver(sqlite3.connect(CHECKPOINT_DB, check_same_thread=False))
+    # 编译，带 SQLite Checkpointer（状态持久化，WAL 模式支持并发读）
+    conn = sqlite3.connect(CHECKPOINT_DB, check_same_thread=False, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")  # 等待锁最多 10s
+    checkpointer = SqliteSaver(conn)
     return graph.compile(checkpointer=checkpointer)

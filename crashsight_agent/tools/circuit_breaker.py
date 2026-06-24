@@ -1,5 +1,6 @@
-"""熔断器 — 工具连续失败时自动禁用，超时后恢复"""
+"""熔断器 — 工具连续失败时自动禁用，超时后恢复（线程安全）"""
 import time
+import threading
 from enum import Enum
 
 
@@ -11,11 +12,13 @@ class CircuitState(Enum):
 
 class CircuitBreaker:
     """
-    熔断器:
+    线程安全的熔断器:
     - 连续失败 failure_threshold 次 → 熔断（OPEN）
     - 熔断后等 recovery_timeout 秒 → 半开（HALF_OPEN）
     - 半开状态下成功 → 恢复（CLOSED）
     - 半开状态下失败 → 继续熔断
+    
+    所有状态修改都在 Lock 保护下执行，避免多线程竞态。
     """
 
     def __init__(self, failure_threshold: int = 3, recovery_timeout: int = 60):
@@ -26,42 +29,44 @@ class CircuitBreaker:
         self.last_failure_time = 0.0
         self.total_calls = 0
         self.total_failures = 0
+        self._lock = threading.Lock()
 
     def can_execute(self) -> bool:
-        """是否允许执行"""
-        if self.state == CircuitState.CLOSED:
-            return True
-        if self.state == CircuitState.OPEN:
-            # 检查是否到了恢复时间
-            if time.time() - self.last_failure_time >= self.recovery_timeout:
-                self.state = CircuitState.HALF_OPEN
+        """是否允许执行（线程安全）"""
+        with self._lock:
+            if self.state == CircuitState.CLOSED:
                 return True
-            return False
-        # HALF_OPEN: 允许试探一次
-        return True
+            if self.state == CircuitState.OPEN:
+                if time.time() - self.last_failure_time >= self.recovery_timeout:
+                    self.state = CircuitState.HALF_OPEN
+                    return True
+                return False
+            # HALF_OPEN: 允许试探一次
+            return True
 
     def record_success(self):
-        """记录成功"""
-        self.total_calls += 1
-        self.failure_count = 0
-        if self.state == CircuitState.HALF_OPEN:
-            self.state = CircuitState.CLOSED
-            print(f'[CircuitBreaker] 恢复正常 (HALF_OPEN → CLOSED)')
+        """记录成功（线程安全）"""
+        with self._lock:
+            self.total_calls += 1
+            self.failure_count = 0
+            if self.state == CircuitState.HALF_OPEN:
+                self.state = CircuitState.CLOSED
+                print(f'[CircuitBreaker] 恢复正常 (HALF_OPEN → CLOSED)')
 
     def record_failure(self):
-        """记录失败"""
-        self.total_calls += 1
-        self.total_failures += 1
-        self.failure_count += 1
-        self.last_failure_time = time.time()
+        """记录失败（线程安全）"""
+        with self._lock:
+            self.total_calls += 1
+            self.total_failures += 1
+            self.failure_count += 1
+            self.last_failure_time = time.time()
 
-        if self.state == CircuitState.HALF_OPEN:
-            # 半开试探失败，继续熔断
-            self.state = CircuitState.OPEN
-            print(f'[CircuitBreaker] 试探失败，继续熔断 (HALF_OPEN → OPEN)')
-        elif self.failure_count >= self.failure_threshold:
-            self.state = CircuitState.OPEN
-            print(f'[CircuitBreaker] 连续失败{self.failure_count}次，触发熔断 (CLOSED → OPEN)')
+            if self.state == CircuitState.HALF_OPEN:
+                self.state = CircuitState.OPEN
+                print(f'[CircuitBreaker] 试探失败，继续熔断 (HALF_OPEN → OPEN)')
+            elif self.failure_count >= self.failure_threshold:
+                self.state = CircuitState.OPEN
+                print(f'[CircuitBreaker] 连续失败{self.failure_count}次，触发熔断 (CLOSED → OPEN)')
 
     @property
     def is_open(self) -> bool:

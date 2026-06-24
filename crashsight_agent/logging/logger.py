@@ -161,12 +161,24 @@ class AgentLogger:
         })
 
 
-# ─── 全局单例 ───
-_logger: Optional[AgentLogger] = None
+# ─── 线程安全的 per-session Logger ───
+import threading
+
+_logger_store: dict[str, AgentLogger] = {}
+_logger_lock = threading.Lock()
+_logger_local = threading.local()
 
 
 def get_logger(session_id: str = '') -> AgentLogger:
-    global _logger
-    if _logger is None or (_logger.session_id != session_id and session_id):
-        _logger = AgentLogger(session_id)
-    return _logger
+    """获取当前会话的 Logger（线程安全）"""
+    # 优先用传入的 session_id，其次用线程绑定的
+    sid = session_id or getattr(_logger_local, 'session_id', '') or '__default__'
+    with _logger_lock:
+        if sid not in _logger_store:
+            _logger_store[sid] = AgentLogger(sid)
+        return _logger_store[sid]
+
+
+def bind_logger_session(session_id: str):
+    """在当前线程绑定 session_id（子线程继承用）"""
+    _logger_local.session_id = session_id
