@@ -10,22 +10,125 @@ from ...streaming.events import get_emitter, EventType
 from ...logging import get_logger
 
 
-# 各意图对应的工具调用计划
+# ==================== 执行计划模板 ====================
+# 比 INTENT_PLANS 更细粒度：同一意图根据上下文选不同模板
+#
+# 选择逻辑：select_plan(intent, query, context) → plan_name
+# 每个模板定义执行步骤和是否需要完整流程（并行堆栈+历史判定）
+
+PLAN_TEMPLATES = {
+    # ── crash_report 意图的子计划 ──
+    'full_report': {
+        'desc': '完整崩溃报告（趋势+TOP10+堆栈+历史+TAPD）',
+        'steps': [
+            {'tool': 'get_crash_trend', 'alias': 'trend'},
+            {'tool': 'get_top_issues', 'alias': 'top_issues'},
+        ],
+        'need_full_pipeline': True,  # 需要后续并行堆栈+历史判定+TAPD
+    },
+    'top_only': {
+        'desc': '只看 TOP 列表（不做历史判定，快速出结果）',
+        'steps': [
+            {'tool': 'get_crash_trend', 'alias': 'trend'},
+            {'tool': 'get_top_issues', 'alias': 'top_issues'},
+        ],
+        'need_full_pipeline': False,  # 跳过堆栈+历史判定
+    },
+    'quick_status': {
+        'desc': '快速状态检查（只看趋势+TAPD，不拉堆栈）',
+        'steps': [
+            {'tool': 'get_crash_trend', 'alias': 'trend'},
+            {'tool': 'get_top_issues', 'alias': 'top_issues'},
+        ],
+        'need_full_pipeline': False,
+        'tapd_only': True,  # 只拉 TAPD 不做历史判定
+    },
+
+    # ── trend_query 意图 ──
+    'trend_only': {
+        'desc': '只看崩溃率趋势',
+        'steps': [
+            {'tool': 'get_crash_trend', 'alias': 'trend'},
+        ],
+        'need_full_pipeline': False,
+    },
+
+    # ── issue_detail 意图 ──
+    'deep_dive': {
+        'desc': '深入分析某个 issue（堆栈+历史+TAPD）',
+        'steps': [
+            {'tool': 'get_issue_full_stack', 'alias': 'stack'},
+        ],
+        'need_full_pipeline': False,
+    },
+
+    # ── history_check 意图 ──
+    'history_check': {
+        'desc': '判断是否历史问题',
+        'steps': [
+            {'tool': 'get_issue_full_stack', 'alias': 'stack'},
+        ],
+        'need_full_pipeline': False,
+    },
+
+    # ── compare 意图 ──
+    'compare_periods': {
+        'desc': '对比两个时间段的崩溃',
+        'steps': [
+            {'tool': 'get_crash_trend', 'alias': 'trend'},
+            {'tool': 'get_top_issues', 'alias': 'top_issues'},
+        ],
+        'need_full_pipeline': False,
+    },
+}
+
+
+def select_plan(intent: str, query: str, version: str = '', issue_id: str = '') -> str:
+    """根据意图+上下文选择执行计划模板
+    
+    选择逻辑（不调 LLM，纯规则）：
+    - crash_report + 有具体版本 → full_report（做完整分析）
+    - crash_report + 无版本 / 全版本 → top_only（不做历史判定，版本太泛结果不准）
+    - crash_report + query 中提到 TAPD/状态/跟进 → quick_status
+    - trend_query → trend_only
+    - issue_detail → deep_dive
+    - history_check → history_check
+    - compare → compare_periods
+    """
+    import re
+
+    if intent == 'crash_report':
+        # 用户问 TAPD 状态/处理情况
+        if re.search(r'tapd|状态|处理|跟进|谁在|分配', query.lower()):
+            return 'quick_status'
+        # 有具体版本 → 做完整流程（历史判定有意义）
+        if version and version != '-1' and version != '':
+            return 'full_report'
+        # 无版本/全版本 → 只出 TOP 列表
+        return 'top_only'
+
+    elif intent == 'trend_query':
+        return 'trend_only'
+
+    elif intent == 'issue_detail':
+        return 'deep_dive'
+
+    elif intent == 'history_check':
+        return 'history_check'
+
+    elif intent == 'compare':
+        return 'compare_periods'
+
+    # 默认
+    return 'full_report'
+
+
+# 兼容旧代码的 INTENT_PLANS（通过 select_plan 选择后不再直接使用）
 INTENT_PLANS = {
-    'crash_report': [
-        {'tool': 'get_crash_trend', 'alias': 'trend'},
-        {'tool': 'get_top_issues', 'alias': 'top_issues'},
-    ],
-    'trend_query': [
-        {'tool': 'get_crash_trend', 'alias': 'trend'},
-    ],
-    'issue_detail': [
-        {'tool': 'get_issue_full_stack', 'alias': 'stack'},
-    ],
-    'history_check': [
-        {'tool': 'get_issue_full_stack', 'alias': 'stack'},
-        # check_history_issue 在 observe 阶段根据 stack 结果决定是否调用
-    ],
+    'crash_report': PLAN_TEMPLATES['full_report']['steps'],
+    'trend_query': PLAN_TEMPLATES['trend_only']['steps'],
+    'issue_detail': PLAN_TEMPLATES['deep_dive']['steps'],
+    'history_check': PLAN_TEMPLATES['history_check']['steps'],
 }
 
 
@@ -80,23 +183,29 @@ def act_node(state: dict) -> dict:
         print(f'[Act] 🔄 执行恢复策略: {recovery_strategy.get("action", "")}')
         return _execute_recovery(state, recovery_strategy)
 
-    # ─── 根据意图执行完整流程 ───
+    # ─── 选择执行计划模板 ───
+    query = state.get('query', '')
+    plan_name = select_plan(intent, query, version, issue_id)
+    plan = PLAN_TEMPLATES.get(plan_name, PLAN_TEMPLATES['full_report'])
+
+    logger._write('info', 'act', 'plan_selected', {
+        'plan': plan_name, 'desc': plan['desc'],
+        'need_full_pipeline': plan.get('need_full_pipeline', False),
+    })
+    print(f'[Act] 📋 计划: {plan_name} — {plan["desc"]}')
+
+    # ─── 根据计划执行 ───
     tool_calls = []
     observations = []
 
-    if intent == 'crash_report':
-        # 完整报告流程（与原前后端程序一致）:
-        # Step 1: 崩溃率趋势
-        # Step 2: TOP10 问题列表
-        # Step 3: 逐条拉堆栈 + 判断历史问题
-        # Step 4: 拉 TAPD 详情
+    if plan.get('need_full_pipeline'):
+        # 完整流水线（趋势 + TOP10 + 并行堆栈 + 历史判定 + TAPD）
         observations, tool_calls = _execute_full_report(
             project_id, version, start_date, end_date
         )
     else:
-        # 其他意图：按计划执行
-        plan = INTENT_PLANS.get(intent, [])
-        for step in plan:
+        # 按模板的 steps 逐步执行（不走完整流水线）
+        for step in plan['steps']:
             tool_name = step['tool']
             alias = step['alias']
             args = _build_args(tool_name, project_id, version, start_date, end_date, issue_id)
