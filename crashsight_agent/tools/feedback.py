@@ -9,16 +9,17 @@
 """
 import os
 import json
+import logging
 import sqlite3
 from datetime import datetime
 from ..llm_client import call_llm
 from ..memory import MemoryStore
+from ..config import DB_PATH
 
+logger = logging.getLogger(__name__)
 
 # 反馈数据库（和 memory 共用一个 SQLite）
 _memory = MemoryStore()
-
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'memory.sqlite')
 
 
 def _ensure_feedback_table():

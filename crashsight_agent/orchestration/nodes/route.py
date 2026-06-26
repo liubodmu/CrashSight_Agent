@@ -359,8 +359,10 @@ def route_node(state: dict) -> dict:
     active_intents, deferred_intents = _filter_and_sort_intents(multi_intents)
 
     if len(active_intents) > 1:
-        print(f'[Route] 多意图识别: {[i["intent"] for i in active_intents]}' +
-              (f', 推迟: {[i["intent"] for i in deferred_intents]}' if deferred_intents else ''))
+        logger._write('info', 'route', 'multi_intent', {
+            'active': [i['intent'] for i in active_intents],
+            'deferred': [i['intent'] for i in deferred_intents],
+        })
 
     # ─── Layer 1: 关键词快速匹配（取主意图的参数）───
     l1_result = _layer1_keyword_match(query, today)
@@ -429,7 +431,7 @@ def route_node(state: dict) -> dict:
         }
 
     # 全部失败
-    print(f'[Route] 三层全部未命中，降级为 clarify')
+    logger._write('warn', 'route', 'all_layers_missed', {'query': query[:60]})
     return {
         'intent': 'clarify',
         'confidence': 0.0,

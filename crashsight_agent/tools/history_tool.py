@@ -4,10 +4,13 @@
 仅最终的匹配判断从手写算法替换为 LLM 语义对比
 """
 import time
+import logging
 from ..config import PROJECTS, CRASHSIGHT_BASE
 from ..api_client import openapi_post
 from ..llm_client import call_llm
 from .keyframe import extract_key_frame
+
+logger = logging.getLogger(__name__)
 
 
 def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str = '') -> dict:
@@ -43,7 +46,7 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
         return {'isHistory': False, 'reason': '无法从堆栈提取关键帧'}
 
     key_frame, is_weak, feature_frames = kf_ret
-    print(f'[History] 关键帧="{key_frame}" 特征组={feature_frames}')
+    logger.info(f'关键帧="{key_frame}" 特征组={feature_frames}')
 
     # ── Step 2: 多帧搜索候选（原版逻辑）──
     candidates = _multi_search_candidates(target_app_id, target_platform_id, feature_frames, limit_per_kw=10)
@@ -56,7 +59,7 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
     if not candidates:
         return {'isHistory': False, 'reason': f'正式服未搜到包含 "{key_frame}" 的问题'}
 
-    print(f'[History] 搜到 {len(candidates)} 个候选')
+    logger.info(f'搜到 {len(candidates)} 个候选')
 
     # ── Step 3 & 4: 逐个候选拉堆栈 + LLM 判断 ──
     # 策略: Jaccard 做快速排除（明显不相关的不浪费 LLM），最终判定全靠 LLM
@@ -74,22 +77,22 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
 
         # 快速排除 1: 异常类型不兼容（如 SIGSEGV vs SIGABRT）
         if exp_exception and cand_exception and not _exception_compatible(exp_exception, cand_exception):
-            print(f'[History]   候选 {cand_id[:8]} 异常类型不兼容({exp_exception} vs {cand_exception})，跳过')
+            logger.debug(f'候选 {cand_id[:8]} 异常类型不兼容({exp_exception} vs {cand_exception})，跳过')
             continue
 
         # 快速排除 2: Jaccard 极低（<0.3）说明两个堆栈完全无关
         _, jaccard_score = _jaccard_match(exp_stack, cand_stack, threshold=0.3)
         if jaccard_score < 0.3:
-            print(f'[History]   候选 {cand_id[:8]} Jaccard={jaccard_score:.2f} 太低，跳过（省 LLM）')
+            logger.debug(f'候选 {cand_id[:8]} Jaccard={jaccard_score:.2f} 太低，跳过')
             continue
 
         # LLM 判断（最终裁决）
-        print(f'[History]   候选 {cand_id[:8]} ({cand_exception}) Jaccard={jaccard_score:.2f}，LLM 判断中...')
+        logger.info(f'候选 {cand_id[:8]} ({cand_exception}) Jaccard={jaccard_score:.2f}，LLM 判断中...')
         is_same = _llm_compare_stacks(exp_stack, cand_stack, exp_exception, cand_exception, key_frame)
 
         if is_same:
             prod_url = f'https://crashsight.qq.com/crash-reporting/crashes/{target_app_id}/{cand_id}?pid={target_platform_id}'
-            print(f'[History]   ✓ LLM 判定匹配! {cand_id[:8]}')
+            logger.info(f'LLM 判定匹配: {cand_id[:8]}')
             return {
                 'isHistory': True,
                 'prodIssueId': cand_id,
@@ -101,7 +104,7 @@ def execute(project_id: str, issue_id: str, exp_stack: str, exp_exception: str =
                 'jaccard': jaccard_score,
             }
 
-        print(f'[History]   ✗ LLM 判定不匹配')
+        logger.debug(f'LLM 判定不匹配: {cand_id[:8]}')
         time.sleep(1)
 
     return {'isHistory': False, 'reason': '候选堆栈均不匹配', 'keyFrame': key_frame}
@@ -152,7 +155,7 @@ def _multi_search_candidates(app_id: str, platform_id: int, feature_frames: list
                 inner = data.get('ret', {}) if isinstance(data.get('ret'), dict) else {}
             issue_list = inner.get('issueList', []) or []
             num_found = inner.get('numFound', 0)
-            print(f'[History] 搜索 "{kf_text[:40]}" → {num_found} 条')
+            logger.debug(f'搜索 "{kf_text[:40]}" → {num_found} 条')
 
             for iss in issue_list:
                 iid = iss.get('issueId', '')
@@ -160,7 +163,7 @@ def _multi_search_candidates(app_id: str, platform_id: int, feature_frames: list
                     seen_ids.add(iid)
                     all_candidates[iid] = iss
         except Exception as e:
-            print(f'[History] 搜索 "{kf_text[:40]}" 失败: {e}')
+            logger.warning(f'搜索 "{kf_text[:40]}" 失败: {e}')
             continue
 
         time.sleep(0.5)
@@ -210,7 +213,7 @@ def _get_candidate_stack(cand: dict, app_id: str, platform_id: int) -> str:
         crash_map = data2.get('ret', {}).get('crashMap', {})
         return crash_map.get('retraceCrashDetail', '') or crash_map.get('callStack', '')
     except Exception as e:
-        print(f'[History] 获取候选 {cand_id[:8]} 堆栈失败: {e}')
+        logger.warning(f'获取候选 {cand_id[:8]} 堆栈失败: {e}')
         return ''
 
 
@@ -333,14 +336,14 @@ def _llm_compare_stacks(stack_a: str, stack_b: str, exc_a: str, exc_b: str, key_
 
     response = call_llm(prompt, temperature=0.1)
     if not response:
-        print('[History] LLM 不可用，默认判为不匹配')
+        logger.warning('LLM 不可用，默认判为不匹配')
         return False
 
     answer = response.strip().upper()
     is_same = answer.startswith('YES')
     reason = response.strip().split(':', 1)[1].strip() if ':' in response else response.strip()
     rules_count = len(learned_rules)
-    print(f'[History]   LLM 判定: {"✓ Match" if is_same else "✗ Mismatch"} | {reason[:60]} (注入{rules_count}条规则)')
+    logger.info(f'LLM 判定: {"Match" if is_same else "Mismatch"} | {reason[:60]} (注入{rules_count}条规则)')
     return is_same
 
 

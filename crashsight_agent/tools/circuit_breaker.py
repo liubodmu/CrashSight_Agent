@@ -1,7 +1,10 @@
 """熔断器 — 工具连续失败时自动禁用，超时后恢复（线程安全）"""
 import time
+import logging
 import threading
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class CircuitState(Enum):
@@ -51,7 +54,7 @@ class CircuitBreaker:
             self.failure_count = 0
             if self.state == CircuitState.HALF_OPEN:
                 self.state = CircuitState.CLOSED
-                print(f'[CircuitBreaker] 恢复正常 (HALF_OPEN → CLOSED)')
+                logger.info('熔断器恢复正常 (HALF_OPEN → CLOSED)')
 
     def record_failure(self):
         """记录失败（线程安全）"""
@@ -63,10 +66,10 @@ class CircuitBreaker:
 
             if self.state == CircuitState.HALF_OPEN:
                 self.state = CircuitState.OPEN
-                print(f'[CircuitBreaker] 试探失败，继续熔断 (HALF_OPEN → OPEN)')
+                logger.warning('试探失败，继续熔断 (HALF_OPEN → OPEN)')
             elif self.failure_count >= self.failure_threshold:
                 self.state = CircuitState.OPEN
-                print(f'[CircuitBreaker] 连续失败{self.failure_count}次，触发熔断 (CLOSED → OPEN)')
+                logger.warning(f'连续失败{self.failure_count}次，触发熔断 (CLOSED → OPEN)')
 
     @property
     def is_open(self) -> bool:

@@ -1,18 +1,34 @@
-"""项目配置 + 鉴权信息"""
+"""项目配置 + 鉴权信息
+
+所有敏感凭据必须通过 .env 文件或环境变量提供，禁止硬编码。
+首次使用请复制 .env.example 为 .env 并填入真实值。
+"""
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _require_env(key: str, description: str = '') -> str:
+    """获取必需的环境变量，未配置时给出明确提示"""
+    value = os.getenv(key, '')
+    if not value:
+        print(f'[Config] ⚠️  环境变量 {key} 未配置{f" ({description})" if description else ""}，'
+              f'请在 .env 文件中设置。', file=sys.stderr)
+    return value
+
+
 # ==================== CrashSight 项目配置 ====================
+# appId/appKey 从环境变量读取，按 CS_{PROJECT}_APP_ID / CS_{PROJECT}_APP_KEY 命名
 PROJECTS = {
     'android_exp': {
         'name': 'UAMobile体验服_Android',
         'aliases': ['安卓体验服', '安卓体验', 'android体验', 'android体验服', '安卓exp'],
         'platform': 1,
         'pid': 1,
-        'appId': '1110268141',
-        'appKey': 'e86c4f2d-e9e0-425b-a89e-b5f9f9f2f0cf',
+        'appId': os.getenv('CS_ANDROID_EXP_APP_ID', ''),
+        'appKey': os.getenv('CS_ANDROID_EXP_APP_KEY', ''),
         'isExperience': True,
         'prod_counterpart': 'android_prod',
     },
@@ -21,8 +37,8 @@ PROJECTS = {
         'aliases': ['安卓正式服', '安卓正式', 'android正式', 'android正式服', '安卓prod'],
         'platform': 1,
         'pid': 1,
-        'appId': '1110196838',
-        'appKey': '5334c709-edc0-489b-89ca-70334603538a',
+        'appId': os.getenv('CS_ANDROID_PROD_APP_ID', ''),
+        'appKey': os.getenv('CS_ANDROID_PROD_APP_KEY', ''),
         'isExperience': False,
         'prod_counterpart': None,
     },
@@ -31,8 +47,8 @@ PROJECTS = {
         'aliases': ['ios体验服', 'ios体验', '苹果体验', '苹果体验服', 'iOS体验'],
         'platform': 2,
         'pid': 2,
-        'appId': 'i1110268141',
-        'appKey': '562af1f2-fdf0-49e7-ab86-b9c60ee37c2d',
+        'appId': os.getenv('CS_IOS_EXP_APP_ID', ''),
+        'appKey': os.getenv('CS_IOS_EXP_APP_KEY', ''),
         'isExperience': True,
         'prod_counterpart': 'ios_prod',
     },
@@ -41,8 +57,8 @@ PROJECTS = {
         'aliases': ['ios正式服', 'ios正式', '苹果正式', '苹果正式服', 'iOS正式'],
         'platform': 2,
         'pid': 2,
-        'appId': 'i1110196838',
-        'appKey': '91f8a7b7-a039-4f15-b76c-b5b151c6d100',
+        'appId': os.getenv('CS_IOS_PROD_APP_ID', ''),
+        'appKey': os.getenv('CS_IOS_PROD_APP_KEY', ''),
         'isExperience': False,
         'prod_counterpart': None,
     },
@@ -51,8 +67,8 @@ PROJECTS = {
         'aliases': ['鸿蒙体验', '鸿蒙体验版', '鸿蒙体验服', 'harmony体验', '鸿蒙exp'],
         'platform': 3,
         'pid': 40,
-        'appId': 'f8e684f35f',
-        'appKey': '9de63179-4354-40ee-b0cf-126a49dcbfc8',
+        'appId': os.getenv('CS_HARMONY_EXP_APP_ID', ''),
+        'appKey': os.getenv('CS_HARMONY_EXP_APP_KEY', ''),
         'isExperience': True,
         'prod_counterpart': 'harmony_prod',
     },
@@ -61,8 +77,8 @@ PROJECTS = {
         'aliases': ['鸿蒙正式', '鸿蒙正式版', '鸿蒙正式服', 'harmony正式', '鸿蒙prod'],
         'platform': 3,
         'pid': 40,
-        'appId': '59caa6f7f5',
-        'appKey': 'f0c26807-d1b2-4fe0-8948-66d38cca8f1f',
+        'appId': os.getenv('CS_HARMONY_PROD_APP_ID', ''),
+        'appKey': os.getenv('CS_HARMONY_PROD_APP_KEY', ''),
         'isExperience': False,
         'prod_counterpart': None,
     },
@@ -70,11 +86,11 @@ PROJECTS = {
 
 # ==================== CrashSight 鉴权 ====================
 USER_AUTH = {
-    'userId': os.getenv('CS_USER_ID', '43393'),
-    'userKey': os.getenv('CS_USER_KEY', '72b7bc22-5b35-43b8-8149-bee29482f5b9'),
+    'userId': _require_env('CS_USER_ID', 'CrashSight 用户ID'),
+    'userKey': _require_env('CS_USER_KEY', 'CrashSight 用户密钥'),
 }
 
-CRASHSIGHT_BASE = 'https://crashsight.qq.com'
+CRASHSIGHT_BASE = os.getenv('CS_BASE_URL', 'https://crashsight.qq.com')
 
 # Cookie 认证（OpenAPI 不支持的接口用）
 COOKIE_AUTH = {
@@ -85,12 +101,12 @@ COOKIE_AUTH = {
 }
 
 # ==================== TAPD 配置 ====================
-TAPD_TOKEN = os.getenv('TAPD_TOKEN', '1c3d2b8bfe9504c10b528d72cf66f9cca8d58d51')
-TAPD_API = 'https://apiv2.tapd.woa.com'
+TAPD_TOKEN = _require_env('TAPD_TOKEN', 'TAPD API Token')
+TAPD_API = os.getenv('TAPD_API_URL', 'https://apiv2.tapd.woa.com')
 
 # ==================== LLM 配置 ====================
 LLM_MODEL = os.getenv('LLM_MODEL', 'deepseek-chat')
-LLM_API_KEY = os.getenv('LLM_API_KEY', '')
+LLM_API_KEY = _require_env('LLM_API_KEY', 'LLM API 密钥')
 LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://api.deepseek.com')
 
 # ==================== Agent 运行参数（原先散落各处的硬编码）====================

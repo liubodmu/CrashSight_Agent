@@ -11,7 +11,16 @@ from crashsight_agent.streaming.events import EventEmitter, set_emitter, bind_se
 from crashsight_agent.logging.logger import bind_logger_session
 
 app = FastAPI(title="CrashSight Analysis Agent")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# CORS 配置：默认只允许本地开发，生产环境通过环境变量 CORS_ORIGINS 配置
+import os
+_cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:8000,http://127.0.0.1:8000').split(',')
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _cors_origins],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 # 会话管理（线程安全）
 _sessions: dict[str, CrashSightAgent] = {}

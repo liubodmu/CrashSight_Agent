@@ -1,18 +1,14 @@
 """LangGraph 状态机定义 — CrashSight Agent 的核心编排"""
-import os
+import threading
 import sqlite3
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 from .state import GraphState
 from .nodes import route_node, clarify_node, act_node, observe_node, report_node
+from ..config import CHECKPOINT_DB_PATH, DATA_DIR
 
-
-# Checkpointer 持久化路径
-CHECKPOINT_DB = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    'data', 'checkpoints.sqlite'
-)
-os.makedirs(os.path.dirname(CHECKPOINT_DB), exist_ok=True)
+import os
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
 def route_decide(state: dict) -> str:
@@ -46,6 +42,41 @@ def observe_decide(state: dict) -> str:
 
     # 成功或错误 → 生成报告
     return 'report'
+
+
+# ==================== 单例 Checkpointer 管理 ====================
+# 全局共享一个 SQLite 连接（线程安全：check_same_thread=False + WAL 模式）
+# 避免每次 build_graph() 都创建新连接导致泄漏
+
+_checkpoint_conn: sqlite3.Connection | None = None
+_checkpoint_lock = threading.Lock()
+
+
+def _get_checkpoint_connection() -> sqlite3.Connection:
+    """获取全局共享的 Checkpoint SQLite 连接（线程安全单例）"""
+    global _checkpoint_conn
+    if _checkpoint_conn is not None:
+        return _checkpoint_conn
+
+    with _checkpoint_lock:
+        # 双重检查锁
+        if _checkpoint_conn is not None:
+            return _checkpoint_conn
+
+        conn = sqlite3.connect(CHECKPOINT_DB_PATH, check_same_thread=False, timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")  # 等待锁最多 10s
+        _checkpoint_conn = conn
+        return _checkpoint_conn
+
+
+def close_checkpoint_connection():
+    """关闭全局 Checkpoint 连接（程序退出时调用）"""
+    global _checkpoint_conn
+    with _checkpoint_lock:
+        if _checkpoint_conn is not None:
+            _checkpoint_conn.close()
+            _checkpoint_conn = None
 
 
 def build_graph():
@@ -109,9 +140,7 @@ def build_graph():
     # report → END
     graph.add_edge('report', END)
 
-    # 编译，带 SQLite Checkpointer（状态持久化，WAL 模式支持并发读）
-    conn = sqlite3.connect(CHECKPOINT_DB, check_same_thread=False, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")  # 等待锁最多 10s
+    # 编译，使用全局共享的 SQLite 连接（避免连接泄漏）
+    conn = _get_checkpoint_connection()
     checkpointer = SqliteSaver(conn)
     return graph.compile(checkpointer=checkpointer)
