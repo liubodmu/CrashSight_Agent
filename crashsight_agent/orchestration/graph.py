@@ -141,6 +141,7 @@ def build_graph():
     graph.add_edge('report', END)
 
     # 编译，使用全局共享的 SQLite 连接（避免连接泄漏）
+    # recursion_limit: 防止 observe↔act 环路死循环（正常流程最多 route→act→observe→act→observe→report = 6 步）
     conn = _get_checkpoint_connection()
     checkpointer = SqliteSaver(conn)
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile(checkpointer=checkpointer, recursion_limit=15)

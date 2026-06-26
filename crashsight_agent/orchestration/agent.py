@@ -1,9 +1,13 @@
 """CrashSight Agent — 基于 LangGraph 状态机 + Checkpointer 持久化"""
 import uuid
 import time
+import logging
+import threading
 from .graph import build_graph
 from ..context import WindowManager, HistoryCompressor
 from ..logging import get_logger
+
+_logger = logging.getLogger(__name__)
 
 
 class CrashSightAgent:
@@ -16,6 +20,7 @@ class CrashSightAgent:
     - 多轮对话: session_history 在 GraphState 中跨轮次传递
     - 状态持久化: SqliteSaver Checkpointer，程序重启可恢复对话
     - 会话隔离: 每个 thread_id 独立的状态流
+    - 线程安全: 会话状态通过 Lock 保护，支持并发请求
     """
 
     def __init__(self, thread_id: str = None):
@@ -23,15 +28,19 @@ class CrashSightAgent:
         self.thread_id = thread_id or str(uuid.uuid4())
         self.session_history = []
         self.last_observations = []
+        self._lock = threading.Lock()  # 保护会话状态的并发访问
 
         # Context 工程
         self.window_manager = WindowManager(max_total=8000, max_history=4000, max_tool_result=2000)
         self.compressor = HistoryCompressor(threshold_tokens=3000, keep_recent=3)
 
-        # 日志记录由 logger 处理
-
     def chat(self, user_message: str) -> str:
-        """处理一次用户消息，返回 Agent 回答"""
+        """处理一次用户消息，返回 Agent 回答（线程安全）"""
+        with self._lock:
+            return self._chat_inner(user_message)
+
+    def _chat_inner(self, user_message: str) -> str:
+        """实际处理逻辑（已在 lock 内）"""
         # Context 工程: 检查历史是否需要压缩
         self.session_history = self.compressor.maybe_compress(self.session_history)
 
@@ -41,10 +50,10 @@ class CrashSightAgent:
         logger.log_session_start(user_message)
         start_time = time.time()
 
-        # 打印 token 预算状态
+        # token 预算检查
         budget = self.window_manager.get_budget_status(self.session_history)
         if budget['needs_compression']:
-            print(f'[Context] ⚠️ 历史 token 使用 {budget["history_usage_pct"]}%，接近上限')
+            _logger.warning(f'历史 token 使用 {budget["history_usage_pct"]}%，接近上限')
 
         # 构建初始状态
         initial_state = {
@@ -127,5 +136,5 @@ class CrashSightAgent:
     def resume(self, thread_id: str):
         """恢复历史会话"""
         self.thread_id = thread_id
-        print(f'[Agent] 恢复会话: {thread_id}')
+        _logger.info(f'恢复会话: {thread_id}')
         # Checkpointer 会自动从 SQLite 加载该 thread 的状态
