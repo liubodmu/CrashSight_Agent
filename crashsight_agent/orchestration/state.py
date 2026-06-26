@@ -11,8 +11,10 @@ class GraphState(TypedDict):
     session_history: list                   # 多轮对话历史
 
     # ─── Route 输出 ───
-    intent: str                             # 意图: crash_report / trend_query / issue_detail / history_check / compare / clarify
-    confidence: float                       # 意图置信度
+    intent: str                             # 主意图（第一个执行的）
+    confidence: float                       # 主意图置信度
+    intents: list                           # 多意图列表 [{'intent': ..., 'confidence': ...}, ...]
+    deferred_intents: list                  # 被推迟的意图（超出3个上限的）
 
     # ─── 参数解析 ───
     project_id: Optional[str]               # 项目 ID

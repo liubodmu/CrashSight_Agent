@@ -41,23 +41,54 @@ def report_node(state: dict) -> dict:
                 if recovered_issues:
                     results['top_issues'] = recovered_issues
 
-    # 根据意图生成回答
-    if intent == 'crash_report':
-        answer = _generate_report(project_name, version, start_date, end_date, results)
-    elif intent == 'trend_query':
-        answer = _generate_trend_answer(project_name, version, start_date, end_date, results)
-    elif intent == 'issue_detail':
-        answer = _generate_detail_answer(results)
-    elif intent == 'history_check':
-        answer = _generate_history_answer(results, last_error)
+    # 根据意图生成回答（支持多意图合并输出）
+    intents = state.get('intents', [])
+    deferred_intents = state.get('deferred_intents', [])
+
+    if intents and len(intents) > 1:
+        # 多意图：每个意图生成一段，合并
+        answer_parts = []
+        for item in intents:
+            i = item['intent']
+            part = _generate_for_intent(i, project_name, version, start_date, end_date, results, last_error)
+            if part:
+                answer_parts.append(part)
+        answer = '\n\n---\n\n'.join(answer_parts)
     else:
-        answer = _generate_generic_answer(intent, results)
+        # 单意图
+        answer = _generate_for_intent(intent, project_name, version, start_date, end_date, results, last_error)
+
+    # 如果有被推迟的意图，在末尾提示
+    if deferred_intents:
+        deferred_names = {
+            'crash_report': '崩溃报告', 'trend_query': '趋势查询',
+            'history_check': '历史问题判定', 'issue_detail': '堆栈详情',
+            'compare': '数据对比',
+        }
+        deferred_list = [deferred_names.get(d['intent'], d['intent']) for d in deferred_intents]
+        answer += f'\n\n---\n\n💡 您还提到了以下需求，可以在下一轮继续提问：\n'
+        for name in deferred_list:
+            answer += f'• {name}\n'
 
     return {
         'answer': answer,
         'report_markdown': answer if intent == 'crash_report' else None,
         'final_status': 'ok',
     }
+
+
+def _generate_for_intent(intent, project_name, version, start_date, end_date, results, last_error) -> str:
+    """根据单个意图生成对应的回答片段"""
+    if intent == 'crash_report':
+        return _generate_report(project_name, version, start_date, end_date, results)
+    elif intent == 'trend_query':
+        return _generate_trend_answer(project_name, version, start_date, end_date, results)
+    elif intent == 'issue_detail':
+        return _generate_detail_answer(results)
+    elif intent == 'history_check':
+        return _generate_history_answer(results, last_error)
+    else:
+        return _generate_generic_answer(intent, results)
 
 
 def _generate_report(project_name, version, start_date, end_date, results) -> str:

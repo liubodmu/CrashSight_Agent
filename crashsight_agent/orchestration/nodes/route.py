@@ -266,19 +266,87 @@ def _layer3_llm_classify(query: str, history: list, today: datetime) -> dict:
         }
 
 
+# ==================== 多意图提取 ====================
+
+# 意图执行优先级（数字小的先执行）
+INTENT_PRIORITY = {
+    'crash_report': 1,
+    'trend_query': 2,
+    'compare': 2,
+    'history_check': 3,   # 依赖 crash_report 的 Top1
+    'issue_detail': 3,    # 同上
+    'clarify': 99,
+}
+
+MAX_INTENTS = 3  # 单次最多处理的意图数
+
+
+def _extract_multi_intents(query: str, today: datetime) -> list:
+    """从 query 中提取所有可能的意图（不止最高分的那一个）
+    
+    返回: [{'intent': ..., 'confidence': ...}, ...]
+    """
+    query_lower = query.lower()
+    matched = []
+    seen_intents = set()
+
+    for intent_name, patterns in INTENT_KEYWORDS.items():
+        for pattern, conf in patterns:
+            if re.search(pattern, query_lower):
+                if intent_name not in seen_intents:
+                    matched.append({'intent': intent_name, 'confidence': conf})
+                    seen_intents.add(intent_name)
+                break
+
+    # 按置信度降序
+    matched.sort(key=lambda x: -x['confidence'])
+    return matched
+
+
+def _filter_and_sort_intents(intents: list) -> tuple:
+    """过滤无效意图 + 按依赖排序 + 限制数量
+    
+    返回: (active_intents, deferred_intents)
+    - active_intents: 本次执行的（最多 MAX_INTENTS 个）
+    - deferred_intents: 被推迟的（超出上限的）
+    """
+    # 过滤：去掉 clarify 和低置信度
+    valid = [i for i in intents if i['intent'] != 'clarify' and i['confidence'] >= 0.7]
+
+    # 去重
+    seen = set()
+    unique = []
+    for item in valid:
+        if item['intent'] not in seen:
+            seen.add(item['intent'])
+            unique.append(item)
+
+    # 按依赖优先级排序（先执行的排前面）
+    unique.sort(key=lambda x: INTENT_PRIORITY.get(x['intent'], 10))
+
+    # 拆分：前 MAX_INTENTS 个执行，剩余推迟
+    active = unique[:MAX_INTENTS]
+    deferred = unique[MAX_INTENTS:]
+
+    return active, deferred
+
+
 # ==================== Route 节点主函数 ====================
 
 def route_node(state: dict) -> dict:
     """
-    三层渐进式意图路由:
+    三层渐进式意图路由（支持多意图）:
+    
+    1. 提取所有匹配的意图
+    2. 过滤无效的 + 按依赖排序 + 限制数量
+    3. 超出上限的放入 deferred_intents，在回答末尾提示用户
+    4. 参数解析仍用最高置信度的结果
     
     Layer 1: 关键词规则匹配（0ms, 零成本）
        ↓ 未命中或置信度 < 0.8
     Layer 2: 历史案例匹配（内存查找, 几乎零成本）
        ↓ 未命中
     Layer 3: LLM 分类（~1s, 消耗 token）
-    
-    逐层升级，大部分请求在 Layer 1 就能确定，节省 LLM 调用。
     """
     query = state['query']
     history = state.get('session_history', [])
@@ -286,18 +354,29 @@ def route_node(state: dict) -> dict:
     logger = get_logger()
     start_time = time.time()
 
-    # ─── Layer 1: 关键词快速匹配 ───
+    # ─── 多意图提取（Layer 1 级别） ───
+    multi_intents = _extract_multi_intents(query, today)
+    active_intents, deferred_intents = _filter_and_sort_intents(multi_intents)
+
+    if len(active_intents) > 1:
+        print(f'[Route] 多意图识别: {[i["intent"] for i in active_intents]}' +
+              (f', 推迟: {[i["intent"] for i in deferred_intents]}' if deferred_intents else ''))
+
+    # ─── Layer 1: 关键词快速匹配（取主意图的参数）───
     l1_result = _layer1_keyword_match(query, today)
     if l1_result.get('matched') and l1_result.get('confidence', 0) >= 0.8:
         duration = int((time.time() - start_time) * 1000)
-        logger.log_route(query, l1_result['intent'], l1_result['confidence'], 'layer1',
+        primary_intent = active_intents[0]['intent'] if active_intents else l1_result['intent']
+        logger.log_route(query, primary_intent, l1_result['confidence'], 'layer1',
                          l1_result.get('project_id'), l1_result.get('version'),
                          l1_result.get('start_date'), l1_result.get('end_date'), duration_ms=duration)
-        save_episodic_case(query, l1_result['intent'], l1_result.get('project_id'),
+        save_episodic_case(query, primary_intent, l1_result.get('project_id'),
                           l1_result.get('version'), l1_result.get('start_date'), l1_result.get('end_date'))
         return {
-            'intent': l1_result['intent'],
+            'intent': primary_intent,
             'confidence': l1_result['confidence'],
+            'intents': active_intents if len(active_intents) > 1 else [],
+            'deferred_intents': deferred_intents,
             'project_id': l1_result.get('project_id'),
             'version': l1_result.get('version'),
             'start_date': l1_result.get('start_date'),
@@ -316,6 +395,8 @@ def route_node(state: dict) -> dict:
         return {
             'intent': l2_result['intent'],
             'confidence': l2_result['confidence'],
+            'intents': active_intents if len(active_intents) > 1 else [],
+            'deferred_intents': deferred_intents,
             'project_id': l2_result.get('project_id'),
             'version': l2_result.get('version'),
             'start_date': l2_result.get('start_date'),
@@ -337,6 +418,8 @@ def route_node(state: dict) -> dict:
         return {
             'intent': l3_result['intent'],
             'confidence': l3_result['confidence'],
+            'intents': active_intents if len(active_intents) > 1 else [],
+            'deferred_intents': deferred_intents,
             'project_id': l3_result.get('project_id'),
             'version': l3_result.get('version'),
             'start_date': l3_result.get('start_date'),
@@ -350,5 +433,7 @@ def route_node(state: dict) -> dict:
     return {
         'intent': 'clarify',
         'confidence': 0.0,
+        'intents': [],
+        'deferred_intents': [],
         'missing_params': ['无法理解用户意图'],
     }

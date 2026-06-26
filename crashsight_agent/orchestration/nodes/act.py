@@ -133,8 +133,9 @@ INTENT_PLANS = {
 
 
 def act_node(state: dict) -> dict:
-    """执行工具调用（执行前经过安全守卫检查）"""
+    """执行工具调用（支持多意图顺序执行）"""
     intent = state.get('intent', 'crash_report')
+    intents = state.get('intents', [])  # 多意图列表
     project_id = state.get('project_id', 'android_exp')
     version = state.get('version', '-1')
     start_date = state.get('start_date', '')
@@ -144,7 +145,8 @@ def act_node(state: dict) -> dict:
     logger = get_logger()
 
     logger._write('info', 'act', 'act_start', {
-        'intent': intent, 'project_id': project_id, 'version': version,
+        'intent': intent, 'intents': [i['intent'] for i in intents] if intents else [intent],
+        'project_id': project_id, 'version': version,
         'start_date': start_date, 'end_date': end_date, 'issue_id': issue_id,
     })
 
@@ -183,55 +185,77 @@ def act_node(state: dict) -> dict:
         print(f'[Act] 🔄 执行恢复策略: {recovery_strategy.get("action", "")}')
         return _execute_recovery(state, recovery_strategy)
 
-    # ─── 选择执行计划模板 ───
+    # ─── 确定要执行的意图列表 ───
     query = state.get('query', '')
-    plan_name = select_plan(intent, query, version, issue_id)
-    plan = PLAN_TEMPLATES.get(plan_name, PLAN_TEMPLATES['full_report'])
+    intent_list = [i['intent'] for i in intents] if intents else [intent]
 
-    logger._write('info', 'act', 'plan_selected', {
-        'plan': plan_name, 'desc': plan['desc'],
-        'need_full_pipeline': plan.get('need_full_pipeline', False),
-    })
-    print(f'[Act] 📋 计划: {plan_name} — {plan["desc"]}')
-
-    # ─── 根据计划执行 ───
     tool_calls = []
     observations = []
 
-    if plan.get('need_full_pipeline'):
-        # 完整流水线（趋势 + TOP10 + 并行堆栈 + 历史判定 + TAPD）
-        observations, tool_calls = _execute_full_report(
-            project_id, version, start_date, end_date
-        )
-    else:
-        # 按模板的 steps 逐步执行（不走完整流水线）
-        for step in plan['steps']:
-            tool_name = step['tool']
-            alias = step['alias']
-            args = _build_args(tool_name, project_id, version, start_date, end_date, issue_id)
+    for idx, current_intent in enumerate(intent_list):
+        # 选择执行计划模板
+        plan_name = select_plan(current_intent, query, version, issue_id)
+        plan = PLAN_TEMPLATES.get(plan_name, PLAN_TEMPLATES['full_report'])
 
-            print(f'[Act] 调用 {tool_name}({json.dumps(args, ensure_ascii=False)[:80]})')
-            result = execute_tool(tool_name, args)
+        if len(intent_list) > 1:
+            print(f'[Act] 📋 [{idx+1}/{len(intent_list)}] 意图={current_intent} → 计划={plan_name}')
+        else:
+            print(f'[Act] 📋 计划: {plan_name} — {plan["desc"]}')
 
-            tool_calls.append({'tool': tool_name, 'alias': alias, 'args': args, 'success': result.get('success', False)})
-            observations.append({
-                'tool': tool_name, 'alias': alias,
-                'success': result.get('success', False),
-                'data': result.get('data') if result.get('success') else None,
-                'error': result.get('error', ''),
-            })
+        logger._write('info', 'act', 'plan_selected', {
+            'intent_index': idx + 1,
+            'intent': current_intent,
+            'plan': plan_name, 'desc': plan['desc'],
+            'need_full_pipeline': plan.get('need_full_pipeline', False),
+        })
 
-            if result.get('success'):
-                print(f'[Act]   ✓ {tool_name} 成功')
-            else:
-                print(f'[Act]   ✗ {tool_name} 失败: {result.get("error", "")[:60]}')
-            time.sleep(0.5)
+        # ─── 根据计划执行 ───
+        if plan.get('need_full_pipeline'):
+            obs, calls = _execute_full_report(project_id, version, start_date, end_date)
+            observations.extend(obs)
+            tool_calls.extend(calls)
+        else:
+            for step in plan['steps']:
+                tool_name = step['tool']
+                alias = step['alias']
+                # 如果是 history_check/issue_detail 且 issue_id 为空，尝试从前面的结果中取 Top1
+                if tool_name in ('get_issue_full_stack', 'check_history_issue') and not issue_id:
+                    issue_id = _extract_top1_id(observations)
+
+                args = _build_args(tool_name, project_id, version, start_date, end_date, issue_id)
+
+                print(f'[Act] 调用 {tool_name}({json.dumps(args, ensure_ascii=False)[:80]})')
+                result = execute_tool(tool_name, args)
+
+                tool_calls.append({'tool': tool_name, 'alias': alias, 'args': args, 'success': result.get('success', False)})
+                observations.append({
+                    'tool': tool_name, 'alias': alias,
+                    'success': result.get('success', False),
+                    'data': result.get('data') if result.get('success') else None,
+                    'error': result.get('error', ''),
+                })
+
+                if result.get('success'):
+                    print(f'[Act]   ✓ {tool_name} 成功')
+                else:
+                    print(f'[Act]   ✗ {tool_name} 失败: {result.get("error", "")[:60]}')
+                time.sleep(0.5)
 
     return {
         'tool_calls': tool_calls,
         'observations': observations,
         'step_count': step_count + 1,
     }
+
+
+def _extract_top1_id(observations: list) -> str:
+    """从已有的 observations 中提取 Top1 issue 的 ID"""
+    for obs in observations:
+        if obs.get('alias') == 'top_issues' and obs.get('success') and obs.get('data'):
+            issues = obs['data']
+            if isinstance(issues, list) and issues:
+                return issues[0].get('issueId', '')
+    return ''
 
 
 def _execute_full_report(project_id: str, version: str, start_date: str, end_date: str) -> tuple:
