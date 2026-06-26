@@ -20,7 +20,7 @@ class CrashSightAgent:
 
     def __init__(self, thread_id: str = None):
         self.graph = build_graph()
-        self.thread_id = thread_id or str(uuid.uuid4())[:8]
+        self.thread_id = thread_id or str(uuid.uuid4())
         self.session_history = []
         self.last_observations = []
 
@@ -28,7 +28,7 @@ class CrashSightAgent:
         self.window_manager = WindowManager(max_total=8000, max_history=4000, max_tool_result=2000)
         self.compressor = HistoryCompressor(threshold_tokens=3000, keep_recent=3)
 
-        print(f'[Agent] 会话 ID: {self.thread_id}')
+        # 日志记录由 logger 处理
 
     def chat(self, user_message: str) -> str:
         """处理一次用户消息，返回 Agent 回答"""
@@ -94,21 +94,35 @@ class CrashSightAgent:
         return answer
 
     def _is_followup(self, message: str) -> bool:
-        """判断是否为追问（基于上一轮结果）"""
+        """判断是否为追问（基于上一轮结果 + 关键词辅助）
+
+        核心逻辑：必须有上一轮的工具执行结果，且当前消息引用了上一轮内容。
+        避免首次对话就误判为追问。
+        """
+        # 没有上一轮结果，不可能是追问
+        if not self.last_observations:
+            return False
+
+        # 没有对话历史，不可能是追问
+        if not self.session_history:
+            return False
+
+        # 有上一轮结果时，检查追问意图关键词
         followup_keywords = [
-            'top1', 'top2', 'top3', '第一个', '第二个',
-            '历史问题', '正式服', '堆栈', '详情', 'tapd',
-            '那个', '这个', '它',
+            'top1', 'top2', 'top3', 'top4', 'top5',
+            '第一个', '第二个', '第三个',
+            '历史问题', '正式服有没有', '正式服有吗',
+            '堆栈', '详情', '详细', 'tapd',
+            '那个', '这个', '它', '刚才',
         ]
         msg_lower = message.lower()
         return any(kw in msg_lower for kw in followup_keywords)
 
     def reset(self):
         """重置对话（新建 thread）"""
-        self.thread_id = str(uuid.uuid4())[:8]
+        self.thread_id = str(uuid.uuid4())
         self.session_history = []
         self.last_observations = []
-        print(f'[Agent] 新会话 ID: {self.thread_id}')
 
     def resume(self, thread_id: str):
         """恢复历史会话"""

@@ -2,12 +2,15 @@
 import json
 import time
 import asyncio
+import logging
 from ...tools import execute_tool
 from ...tools.guard import check_query_safety
 from ...tools.parallel_executor import parallel_process_issues, parallel_fetch_tapd
 from ...config import PROJECTS
 from ...streaming.events import get_emitter, EventType
 from ...logging import get_logger
+
+_logger = logging.getLogger(__name__)
 
 
 # ==================== 执行计划模板 ====================
@@ -301,7 +304,7 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
             emitter.emit(EventType.TOOL_SUCCESS, f'✓ 崩溃率: {tr.get("minRate", "-")}% ~ {tr.get("maxRate", "-")}%', node='act')
         else:
             emitter.emit_tool_error('get_crash_trend', trend_result.get('error', ''))
-    print(f'[Act]   {"✓" if trend_result.get("success") else "✗"} get_crash_trend ({trend_ms}ms)')
+    _logger.info(f'get_crash_trend {"✓" if trend_result.get("success") else "✗"} ({trend_ms}ms)')
     time.sleep(1)
 
     # ── Step 2: TOP10 问题 ──
@@ -328,7 +331,7 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
             emitter.emit(EventType.TOOL_SUCCESS, f'✓ 获取到 {count} 个崩溃问题', node='act')
         else:
             emitter.emit_tool_error('get_top_issues', issues_result.get('error', ''))
-    print(f'[Act]   {"✓" if issues_result.get("success") else "✗"} get_top_issues ({issues_ms}ms)')
+    _logger.info(f'get_top_issues {"✓" if issues_result.get("success") else "✗"} ({issues_ms}ms)')
 
     if not issues_result.get('success') or not issues_result.get('data'):
         return observations, tool_calls
@@ -339,16 +342,7 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
     # ── Step 3 + 4: 并行处理（堆栈+历史判定+TAPD）──
     # 用 asyncio.gather + Semaphore(3) + 令牌桶(22次/分)
     # 替代原来的串行循环，耗时从 65s → 17s
-    try:
-        loop = asyncio.get_running_loop()
-        # 已在异步环境中 → 不能直接 asyncio.run，用新线程
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(1) as pool:
-            future = pool.submit(asyncio.run, _async_steps_3_4(top_issues, project_id, version))
-            history_results, tapd_results = future.result()
-    except RuntimeError:
-        # 没有运行中的事件循环（CLI 等同步环境）
-        history_results, tapd_results = asyncio.run(_async_steps_3_4(top_issues, project_id, version))
+    history_results, tapd_results = _run_async_steps(top_issues, project_id, version)
 
     # ── 把历史判定和 TAPD 结果合并回 top_issues ──
     for issue in top_issues:
@@ -389,9 +383,7 @@ def _execute_full_report(project_id: str, version: str, start_date: str, end_dat
         'total_ms': total_ms,
     }, duration_ms=total_ms)
 
-    print(f'[Act] 完整报告流程完成: {len(top_issues)} 条问题，'
-          f'历史问题 {history_count} 条，'
-          f'TAPD {len(tapd_results)} 条，耗时 {total_ms}ms')
+    _logger.info(f'完整报告完成: {len(top_issues)} 条问题, 历史 {history_count} 条, TAPD {len(tapd_results)} 条, {total_ms}ms')
 
     return observations, tool_calls
 
@@ -425,6 +417,29 @@ def _build_args(tool_name: str, project_id: str, version: str,
             'issue_id': issue_id,
         }
     return {}
+
+
+def _run_async_steps(top_issues: list, project_id: str, version: str) -> tuple:
+    """安全地从同步上下文运行异步并行步骤
+
+    策略：
+    - 如果当前没有事件循环（CLI 模式）→ 直接 asyncio.run()
+    - 如果已有事件循环（FastAPI/uvicorn）→ 创建新事件循环在独立线程中运行
+      避免嵌套事件循环问题
+    """
+    import concurrent.futures
+
+    coro = _async_steps_3_4(top_issues, project_id, version)
+
+    try:
+        asyncio.get_running_loop()
+        # 已有事件循环 → 在独立线程中运行新的事件循环
+        with concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix='async_steps') as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result()
+    except RuntimeError:
+        # 无事件循环（CLI 模式）→ 直接运行
+        return asyncio.run(coro)
 
 
 async def _async_steps_3_4(top_issues: list, project_id: str, version: str) -> tuple:

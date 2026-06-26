@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CrashSight Agent</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -691,79 +694,24 @@
             return div;
         }
 
+        // 配置 marked.js
+        marked.setOptions({
+            breaks: true,
+            gfm: true,
+            headerIds: false,
+        });
+
         function renderMarkdown(text) {
-            // 先处理代码块（避免干扰表格解析）
-            const codeBlocks = [];
-            text = text.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, lang, code) {
-                codeBlocks.push(`<pre><code>${code.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code></pre>`);
-                return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
+            // 使用 marked 解析 Markdown，DOMPurify 防 XSS
+            const rawHtml = marked.parse(text);
+            return DOMPurify.sanitize(rawHtml, {
+                ADD_ATTR: ['target'],
+                ALLOWED_TAGS: [
+                    'h1','h2','h3','h4','p','br','strong','em','code','pre',
+                    'table','thead','tbody','tr','th','td',
+                    'ul','ol','li','a','blockquote','hr','span',
+                ],
             });
-
-            // 解析表格（逐行处理，正确区分 header/separator/body）
-            const lines = text.split('\n');
-            let result = [];
-            let inTable = false;
-            let headerDone = false;
-
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i].trim();
-                // 检测表格行
-                if (line.startsWith('|') && line.endsWith('|')) {
-                    // 分隔行（|---|---|  |:---:|:---:|）→ 标记header完成，跳过
-                    if (line.match(/^\|[\s\-:]+(\|[\s\-:]+)+\|$/)) {
-                        headerDone = true;
-                        continue;
-                    }
-                    const cells = line.split('|').slice(1, -1);
-                    if (!inTable) {
-                        // 第一行表格 → header
-                        inTable = true;
-                        headerDone = false;
-                        result.push('<table><thead><tr>' + cells.map(c => `<th>${_inlineMd(c.trim())}</th>`).join('') + '</tr></thead><tbody>');
-                    } else {
-                        // body 行
-                        result.push('<tr>' + cells.map(c => `<td>${_inlineMd(c.trim())}</td>`).join('') + '</tr>');
-                    }
-                } else {
-                    // 非表格行
-                    if (inTable) {
-                        result.push('</tbody></table>');
-                        inTable = false;
-                        headerDone = false;
-                    }
-                    result.push(line);
-                }
-            }
-            if (inTable) result.push('</tbody></table>');
-
-            let html = result.join('\n');
-
-            // 标题
-            html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-            html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-            html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-            // 内联格式
-            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-            // 列表
-            html = html.replace(/^[•\-\*] (.+)$/gm, '• $1');
-            // 链接
-            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#f59e0b">$1</a>');
-            // 换行
-            html = html.replace(/\n/g, '<br>');
-
-            // 还原代码块
-            codeBlocks.forEach((block, idx) => {
-                html = html.replace(`%%CODEBLOCK_${idx}%%`, block);
-            });
-
-            return html;
-        }
-
-        function _inlineMd(text) {
-            return text
-                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>');
         }
 
         // ========== 发送消息（SSE 流式）==========

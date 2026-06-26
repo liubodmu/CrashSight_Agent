@@ -156,7 +156,15 @@ def _layer1_keyword_match(query: str, today: datetime) -> dict:
 
 from ...memory import MemoryStore
 
-_memory = MemoryStore()
+_memory = None  # 延迟初始化，避免 import 时连接数据库
+
+
+def _get_memory() -> MemoryStore:
+    """延迟初始化 MemoryStore 单例"""
+    global _memory
+    if _memory is None:
+        _memory = MemoryStore()
+    return _memory
 
 
 def _layer2_episodic_match(query: str) -> dict:
@@ -164,7 +172,7 @@ def _layer2_episodic_match(query: str) -> dict:
     Layer 2: 从 SQLite 持久化的历史案例中匹配
     用关键词搜索找相似 episode，按匹配度排序
     """
-    similar = _memory.find_similar_episodes(query, limit=5)
+    similar = _get_memory().find_similar_episodes(query, limit=5)
     if not similar:
         return {'matched': False}
 
@@ -197,7 +205,7 @@ def _layer2_episodic_match(query: str) -> dict:
 def save_episodic_case(query: str, intent: str, project_id: str = None,
                        version: str = None, start_date: str = None, end_date: str = None):
     """保存成功案例到持久化 Memory"""
-    _memory.save_episode(
+    _get_memory().save_episode(
         query=query, intent=intent, project_id=project_id,
         version=version, start_date=start_date, end_date=end_date,
         success=True,

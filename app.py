@@ -232,7 +232,57 @@ async def feedback_stats():
 
 @app.get("/api/health")
 async def health():
-    return {'status': 'ok', 'sessions': len(_sessions)}
+    """增强健康检查 — 验证 DB 连通性 + LLM 配置状态"""
+    import sqlite3
+    from crashsight_agent.config import DB_PATH, LLM_API_KEY, CHECKPOINT_DB_PATH
+
+    checks = {}
+
+    # 检查 Memory DB
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn.execute("SELECT 1")
+        conn.close()
+        checks['memory_db'] = 'ok'
+    except Exception as e:
+        checks['memory_db'] = f'error: {str(e)[:50]}'
+
+    # 检查 Checkpoint DB
+    try:
+        conn = sqlite3.connect(CHECKPOINT_DB_PATH, timeout=5)
+        conn.execute("SELECT 1")
+        conn.close()
+        checks['checkpoint_db'] = 'ok'
+    except Exception as e:
+        checks['checkpoint_db'] = f'error: {str(e)[:50]}'
+
+    # 检查 LLM 配置
+    checks['llm_configured'] = bool(LLM_API_KEY)
+
+    # 总体状态
+    all_ok = (checks['memory_db'] == 'ok' and
+              checks['checkpoint_db'] == 'ok' and
+              checks['llm_configured'])
+
+    return {
+        'status': 'ok' if all_ok else 'degraded',
+        'sessions': len(_sessions),
+        'checks': checks,
+    }
+
+
+@app.get("/api/metrics")
+async def metrics():
+    """运行指标暴露 — 路由命中率、记忆统计、会话数"""
+    from crashsight_agent.memory import MemoryStore
+
+    memory = MemoryStore()
+    stats = memory.get_stats()
+
+    return {
+        'active_sessions': len(_sessions),
+        'memory': stats,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -244,8 +294,44 @@ async def index():
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+# ==================== 定时任务：记忆遗忘 ====================
+import threading
+import time as _time
+import logging
+
+_cleanup_logger = logging.getLogger('memory_cleanup')
+
+
+def _memory_cleanup_loop(interval_hours: int = 24):
+    """后台线程：定期清理过期记忆"""
+    from crashsight_agent.memory import MemoryStore
+    memory = MemoryStore()
+
+    # 启动时立即执行一次
+    try:
+        deleted = memory.cleanup_episodes(max_age_days=90, max_count=5000)
+        _cleanup_logger.info(f'启动清理: 删除 {deleted} 条过期记忆')
+    except Exception as e:
+        _cleanup_logger.error(f'启动清理失败: {e}')
+
+    while True:
+        _time.sleep(interval_hours * 3600)
+        try:
+            deleted = memory.cleanup_episodes(max_age_days=90, max_count=5000)
+            if deleted > 0:
+                _cleanup_logger.info(f'定时清理: 删除 {deleted} 条过期记忆')
+
+            # 同时衰减规则置信度
+            memory.decay_rules(decay_rate=0.02)
+        except Exception as e:
+            _cleanup_logger.error(f'定时清理失败: {e}')
+
+
+# 启动后台清理线程（daemon=True 随主进程退出）
+_cleanup_thread = threading.Thread(target=_memory_cleanup_loop, daemon=True, name='memory-cleanup')
+_cleanup_thread.start()
+
+
 if __name__ == '__main__':
     import uvicorn
-    print("\n  CrashSight Agent Web UI")
-    print("  http://localhost:8000\n")
     uvicorn.run(app, host='0.0.0.0', port=8000)
